@@ -1,0 +1,255 @@
+"""Footage analysis: split videos into shots and score each shot.
+
+Every source video is decoded once at a low frame rate and resolution. From
+those frames we find hard cuts (histogram jumps), measure motion (frame
+difference), brightness and saturation, and save a thumbnail per shot. Long
+shots are split into shorter "moments" so the planner has fine-grained units.
+Results are cached per file, so re-analysing the same footage is instant.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
+
+from .ffmpeg_tools import MediaError, check_cancel, iter_frames, probe
+from .paths import cache_dir, file_key
+
+log = logging.getLogger(__name__)
+
+ANALYSIS_FPS = 4.0
+THUMB_W, THUMB_H = 256, 144
+ANALYSIS_VERSION = 6
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".wmv", ".flv", ".ts"}
+
+
+@dataclass
+class Shot:
+    id: int                 # global id across all sources (assigned by Footage)
+    source: int             # index into Footage.sources
+    start: float            # seconds in the source file
+    end: float
+    motion: float           # 0..1, mean frame-to-frame change (normalised per library)
+    motion_raw: float
+    peak: float             # time of strongest motion inside the shot (source seconds)
+    brightness: float       # 0..1
+    saturation: float       # 0..1
+    color: tuple[int, int, int]
+    thumb: str              # path to a JPEG thumbnail
+    usable: bool = True     # False for black or blank frames
+    static: bool = False    # barely moves (stills, menus, talking heads)
+    crop: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # picture inside baked-in bars
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+@dataclass
+class Source:
+    path: str
+    duration: float
+    width: int
+    height: int
+    fps: float
+
+
+@dataclass
+class Footage:
+    sources: list[Source] = field(default_factory=list)
+    shots: list[Shot] = field(default_factory=list)
+
+    def shot(self, shot_id: int) -> Shot:
+        return self.shots[shot_id]
+
+    def usable_shots(self) -> list[Shot]:
+        good = [s for s in self.shots if s.usable]
+        return good or list(self.shots)
+
+    def summary(self) -> str:
+        total = sum(s.duration for s in self.sources)
+        return f"{len(self.sources)} video(s), {total / 60:.1f} min, {len(self.shots)} shots"
+
+
+def find_videos(paths: list[str | Path]) -> list[Path]:
+    """Expand folders and keep files with a video extension."""
+    found: list[Path] = []
+    for p in map(Path, paths):
+        if p.is_dir():
+            found += sorted(q for q in p.iterdir() if q.is_file() and q.suffix.lower() in VIDEO_EXTENSIONS)
+        elif p.is_file():
+            found.append(p)
+    seen, unique = set(), []
+    for p in found:
+        key = str(p.resolve()).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+    return unique
+
+
+def analyze_footage(paths: list[str | Path], cancel=None, progress=None) -> Footage:
+    """Analyse every video (using the cache when possible) into one shot library.
+
+    `progress(fraction, message)` is called as files are processed.
+    """
+    files = find_videos(paths)
+    if not files:
+        raise MediaError("No video files were added.")
+
+    footage = Footage()
+    per_file: list[tuple[Source, list[dict]]] = []
+    for i, path in enumerate(files):
+        check_cancel(cancel)
+        if progress:
+            progress(i / len(files), f"Watching {path.name}")
+        try:
+            source, shots = _analyze_one(path, cancel,
+                                         lambda f, i=i: progress and progress((i + f) / len(files),
+                                                                              f"Watching {path.name}"))
+        except MediaError as exc:
+            log.warning("Skipping %s: %s", path.name, exc)
+            continue
+        per_file.append((source, shots))
+        log.info("  %s: %d shots (%.0fs)", path.name, len(shots), source.duration)
+
+    if not per_file:
+        raise MediaError("None of the added videos could be read.")
+
+    # Normalise motion across the whole library so "high motion" is relative
+    # to what the user gave us (a calm anime and a shooter both get a range).
+    raw = np.array([s["motion_raw"] for _, shots in per_file for s in shots] or [0.0])
+    lo, hi = np.percentile(raw, 5), np.percentile(raw, 95)
+    span = max(hi - lo, 1e-6)
+    for src_index, (source, shots) in enumerate(per_file):
+        footage.sources.append(source)
+        for s in shots:
+            footage.shots.append(Shot(
+                id=len(footage.shots), source=src_index,
+                motion=float(np.clip((s["motion_raw"] - lo) / span, 0, 1)),
+                **{k: v for k, v in s.items() if k not in ("source",)},
+            ))
+    if progress:
+        progress(1.0, footage.summary())
+    return footage
+
+
+def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
+    info = probe(path)
+    if not info.has_video:
+        raise MediaError("no video stream")
+    key = file_key(path, ANALYSIS_VERSION)
+    out_dir = cache_dir() / "footage" / key
+    meta_file = out_dir / "shots.json"
+    source = Source(str(path), info.duration, info.width, info.height, info.fps)
+    if meta_file.is_file():
+        try:
+            data = json.loads(meta_file.read_text(encoding="utf-8"))
+            if all(Path(s["thumb"]).is_file() for s in data["shots"]):
+                return source, data["shots"]
+        except (OSError, ValueError, KeyError):
+            pass
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    max_frames = int(5.0 * ANALYSIS_FPS)  # long takes are split into <=5 s moments
+    step = 1.0 / ANALYSIS_FPS
+    shots: list[dict] = []
+    seg: list[dict] = []          # per-frame stats of the moment being built
+    recent_diffs: list[float] = []
+    prev_gray = prev_hist = None
+    expected = max(1, int(info.duration * ANALYSIS_FPS))
+    count = 0
+
+    def close_segment():
+        if len(seg) < 2:
+            seg.clear()
+            return
+        m = np.array([f["motion"] for f in seg[1:]])
+        mid = seg[len(seg) // 2]
+        thumb = out_dir / f"shot_{len(shots):05d}.jpg"
+        Image.fromarray(mid["frame"]).save(thumb, quality=82)
+        br = np.array([f["bright"] for f in seg])
+        # Baked-in bars: edge columns/rows whose median brightness never rises above near-black.
+        lum = np.stack([f["frame"].mean(axis=2) for f in seg])
+        col_max = np.median(lum, axis=1).max(axis=0)
+        row_max = np.median(lum, axis=2).max(axis=0)
+        shots.append({
+            "start": round(seg[0]["t"], 3),
+            "end": round(min(seg[-1]["t"] + step, info.duration), 3),
+            "motion_raw": float(m.mean()),
+            "peak": round(seg[1 + int(np.argmax(m))]["t"], 3),
+            "brightness": float(br.mean()),
+            "saturation": float(np.mean([f["sat"] for f in seg])),
+            "color": tuple(int(v) for v in np.mean([f["color"] for f in seg], axis=0)),
+            "thumb": str(thumb),
+            "usable": bool(br.mean() > 0.06),
+            "static": bool(m.mean() < 0.002 and br.std() < 0.01),
+            "crop": _bars(col_max, row_max),
+        })
+        seg.clear()
+
+    for t, frame in iter_frames(path, ANALYSIS_FPS, THUMB_W, THUMB_H, cancel):
+        small = frame[::4, ::4].astype(np.float32)
+        gray = small.mean(axis=2)
+
+        mx, mn = small.max(axis=2), small.min(axis=2)
+        q = (frame[::2, ::2] // 64).reshape(-1, 3).astype(np.int32)
+        hist = np.bincount(q[:, 0] * 16 + q[:, 1] * 4 + q[:, 2], minlength=64).astype(np.float32)
+        hist /= max(hist.sum(), 1.0)
+
+        is_cut = False
+        motion = 0.0
+        if prev_gray is not None:
+            motion = float(np.abs(gray - prev_gray).mean() / (0.25 * 255.0 + 0.75 * gray.mean()))
+            diff = float(np.abs(hist - prev_hist).sum())  # 0..2
+            local = float(np.median(recent_diffs)) if recent_diffs else 0.0
+            # A cut is a histogram jump that stands out from recent frames.
+            is_cut = diff > 0.45 and diff > 3.0 * local + 0.1 and len(seg) >= 2
+            recent_diffs = (recent_diffs + [diff])[-8:]
+        if is_cut or len(seg) >= max_frames:
+            close_segment()
+            if is_cut:
+                motion = 0.0  # the jump across a cut is not motion
+        seg.append({
+            "t": t, "frame": frame, "motion": motion,
+            "bright": float(gray.mean() / 255.0),
+            "sat": float(((mx - mn) / (mx + 1e-3)).mean()),
+            "color": small.reshape(-1, 3).mean(axis=0),
+        })
+        if len(seg) == 2 and seg[1]["motion"] and not seg[0]["motion"]:
+            seg[0]["motion"] = seg[1]["motion"]
+        prev_gray, prev_hist = gray, hist
+        count += 1
+        if progress and count % 40 == 0:
+            progress(min(0.99, count / expected))
+    close_segment()
+
+    if not shots:
+        raise MediaError("too short or unreadable")
+    meta_file.write_text(json.dumps({"source": asdict(source), "shots": shots}), encoding="utf-8")
+    return source, shots
+
+
+def _bars(col_max: np.ndarray, row_max: np.ndarray) -> tuple[float, float, float, float]:
+    """Find letterbox/pillarbox bars: edges that never get brighter than near-black."""
+    def span(profile):
+        n = len(profile)
+        lit = np.flatnonzero(profile > 20)
+        if len(lit) == 0:
+            return 0, n
+        a, b = int(lit[0]), int(lit[-1]) + 1
+        left, right = a, n - b
+        # Real bars are symmetric, more than 3% per side, and leave at least half the frame.
+        # Anything else (a dark scene, a vignette, a logo in one corner) is left alone.
+        if min(left, right) < n * 0.03 or abs(left - right) > n * 0.03 or b - a < n * 0.5:
+            return 0, n
+        return a + 1, b - 1  # one extra pixel hides soft bar edges
+    x0, x1 = span(col_max)
+    y0, y1 = span(row_max)
+    W, H = len(col_max), len(row_max)
+    return (round(x0 / W, 4), round(y0 / H, 4), round((x1 - x0) / W, 4), round((y1 - y0) / H, 4))
