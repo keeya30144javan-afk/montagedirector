@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import subprocess
@@ -862,6 +863,11 @@ class MainWindow(QMainWindow):
         shown = [n.lstrip("⏱ ") for n in shown]
         if shown:
             lines.append("<span style='color:%s'>%s</span>" % (theme.MUTED, " · ".join(shown)))
+        if d.unclear and not proj.settings.use_ai:
+            quoted = " · ".join(f"“{html.escape(u)}”" for u in d.unclear[:4])
+            lines.append(f"<span style='color:{theme.WARN}'>Didn't catch: {quoted}</span> "
+                         f"<span style='color:{theme.MUTED}'>(try pace, effects, the kind of shots, or a time like "
+                         f"\"at 1:20\"; the AI Director understands anything)</span>")
         for w in plan.warnings:
             lines.append(f"<span style='color:{theme.WARN}'>⚠ {w}</span>")
         cost = f" · AI cost so far: ${proj.ai.usage.cost:.2f}" if proj.ai else ""

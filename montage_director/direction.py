@@ -123,6 +123,14 @@ class SectionDirection:
     sync_hits: bool = False     # cut on the actual drum hits, not the beat grid
     fixed: bool = False         # start/end were chosen exactly (a selected region): don't move them
     camera: str | None = None   # prefer shots with this camera move: pan | zoom | shaky | still
+    occurrence: int | None = None  # which time the cue happens: 1 = first, 2 = second, -1 = last
+    span: str | None = None     # a stretch relative to the edit: "tail:20", "head:30", "half", "firsthalf"
+    prefer: dict[str, float] = field(default_factory=dict)  # shot content: motion, bright, warm, sat, hue
+    sync_on: str = "hits"       # with sync_hits: cut on "hits" (kicks + snares), "kick" or "snare"
+    ramp: bool = False          # cuts get quicker and quicker toward the end of the section
+    velocity: bool = False      # velocity edit: fast clips that slow down on the big beats
+    drum_fx: dict[str, str] = field(default_factory=dict)   # effect -> drum it lands on ("snare", "kick", ...)
+    what: str = ""              # how the free reader summed it up, for the timeline under the player
 
 
 @dataclass
@@ -147,6 +155,13 @@ class Direction:
     regions: list[SectionDirection] = field(default_factory=list)  # per-region refinements (win over sections)
     tap_cuts: list[float] = field(default_factory=list)            # cuts the user tapped (song seconds)
     drops: list[float] | None = None                # song seconds; None = use the song analysis
+    # Free-reader extras, by song-section label ("drop", "verse"...) or "all":
+    prefer: dict[str, dict[str, float]] = field(default_factory=dict)  # what kind of shots to pick
+    sync: dict[str, str] = field(default_factory=dict)       # cut on the drums instead of the beat grid
+    drum_fx: list[dict] = field(default_factory=list)        # {"effect", "drum", "label"}: effect on each drum hit
+    ramp: list[str] = field(default_factory=list)            # labels whose cuts speed up toward the end
+    velocity: list[str] = field(default_factory=list)        # labels cut as a velocity edit
+    unclear: list[str] = field(default_factory=list)         # parts of the prompt the free reader didn't get
 
     def section_direction(self, t: float) -> SectionDirection | None:
         for s in self.sections:
@@ -185,153 +200,10 @@ def _negated(text: str, word: str) -> bool:
 
 
 def read_prompt(prompt: str, base: Direction) -> Direction:
-    """Adjust a style-based Direction from a plain-English prompt using keywords."""
-    d = copy.deepcopy(base)
-    text = " " + prompt.lower().strip() + " "
-    notes: list[str] = []
-    if not prompt.strip():
-        return d
+    """Adjust a style-based Direction from a plain-English prompt (see reader.py)."""
+    from .reader import read_prompt as _read
 
-    def scale_cuts(labels, factor):
-        for lab in labels:
-            cur = d.style.cut_every[lab]
-            d.style.cut_every[lab] = min(CUT_CHOICES, key=lambda c: abs(c - cur * factor))
-
-    def bump(labels, effect, amount):
-        for lab in labels:
-            fx = d.style.effects[lab]
-            fx[effect] = float(min(1.0, max(0.0, fx.get(effect, 0.0) + amount)))
-
-    # Clause-level: "calm intro, then go crazy on the drop"
-    clauses = [c for c in re.split(r"[.;,!]|\bthen\b|\bbut\b|\band\b", text) if c.strip()]
-    targeted = set()
-    for clause in clauses:
-        labels = {lab for w, lab in _SECTION_WORDS.items() if re.search(r"\b" + re.escape(w) + r"\b", clause)}
-        if not labels or _TIME.search(clause):
-            continue
-        targeted |= labels
-        names = "/".join(sorted(labels))
-        if _has(clause, _FASTER):
-            scale_cuts(labels, 0.5)
-            for e in ("zoom", "shake", "flash"):
-                bump(labels, e, 0.3)
-            notes.append(f"{names}: faster, harder")
-        if _has(clause, _SLOWER):
-            scale_cuts(labels, 2.0)
-            bump(labels, "slowmo", 0.4)
-            for e in ("shake", "zoom"):
-                bump(labels, e, -0.4)
-            notes.append(f"{names}: slower, calmer")
-        for word, effect in (("flash", "flash"), ("zoom", "zoom"), ("shake", "shake"), ("glitch", "rgb"),
-                             ("slow mo", "slowmo"), ("slowmo", "slowmo"), ("slow-mo", "slowmo"),
-                             ("slow motion", "slowmo"), ("reverse", "reverse"), ("strobe", "invert")):
-            if word in clause:
-                if _negated(clause, word):
-                    bump(labels, effect, -1.0)
-                    notes.append(f"{names}: no {word}")
-                else:
-                    bump(labels, effect, 0.5)
-                    notes.append(f"{names}: more {word}")
-
-    # Whole-edit words (only when they were not tied to a section above)
-    every = list(SECTION_LABELS)
-    # Sentences with a time ("at 1:34 ...") only affect that moment, not the whole edit.
-    # Sentences that name a part of the song ("crazy drop") only affect that part.
-    def _names_section(c):
-        return any(re.search(r"\b" + re.escape(w) + r"\b", c) for w in _SECTION_WORDS)
-    global_text = " " + " ".join(c for c in clauses if not _TIME.search(c) and not _names_section(c)) + " "
-    if _has(global_text, _FASTER):
-        scale_cuts(every, 0.5)
-        d.style.energy_bias = min(0.5, d.style.energy_bias + 0.2)
-        notes.append("faster cuts, wilder shots")
-    if _has(global_text, _SLOWER):
-        scale_cuts(every, 2.0)
-        bump(every, "slowmo", 0.3)
-        d.style.energy_bias = max(-0.5, d.style.energy_bias - 0.2)
-        notes.append("slower cuts, calmer shots")
-
-    if re.search(r"\b(no|without)\s+(effects|fx)\b|\bclean\b", text):
-        for lab in every:
-            d.style.effects[lab] = _fx()
-        d.style.flash_top = 0.0
-        d.look = Look()
-        notes.append("no effects")
-    if "flash" in global_text:
-        if _negated(global_text, "flash"):
-            d.style.flash_top = 0.0
-            bump(every, "flash", -1)
-            notes.append("no flashes")
-        elif _has(global_text, ("lots of", "more", "tons of", "many", "heavy")):
-            d.style.flash_top = min(0.3, d.style.flash_top * 2 + 0.04)
-            bump(every, "flash", 0.3)
-            notes.append("more flashes")
-    for word, effect, label in (("shake", "shake", "shake"), ("zoom", "zoom", "zoom punches"),
-                                ("glitch", "rgb", "glitch / RGB split"), ("rgb", "rgb", "RGB split"),
-                                ("slow mo", "slowmo", "slow motion"), ("slowmo", "slowmo", "slow motion"),
-                                ("slow motion", "slowmo", "slow motion"), ("reverse", "reverse", "reversed clips"),
-                                ("strobe", "invert", "negative strobes")):
-        if word in global_text:
-            if _negated(global_text, word):
-                bump(every, effect, -1)
-                notes.append(f"no {label}")
-            else:
-                bump(every, effect, 0.35)
-                notes.append(label)
-
-    # Look
-    looks = [
-        (("vhs", "retro", "grain", "grainy", "old school", "camcorder"), "vhs", "VHS look"),
-        (("black and white", "b&w", "monochrome", "grayscale", "greyscale"), "mono", "black and white"),
-        (("y2k", "2000s", "2010s", "old youtube", "nostalgic"), "y2k", "Y2K colour"),
-        (("teal", "orange", "movie", "film", "cinematic"), "cinematic", "film grade"),
-        (("sad", "melancholy", "depressing", "rain"), "sad", "sad grade"),
-        (("dream", "dreamy", "ethereal"), "dream", "dreamy grade"),
-    ]
-    for words, grade, label in looks:
-        if _has(text, words):
-            d.look.grade = grade
-            notes.append(label)
-            break
-    if _has(text, ("glow", "bloom", "glowy", "dreamy")):
-        d.look.glow = max(d.look.glow, 0.5)
-        notes.append("glow")
-    if _has(text, ("trails", "ghost", "ghosting", "echo", "afterimage")):
-        d.look.trails = max(d.look.trails, 0.5)
-        notes.append("ghost trails")
-    if _has(text, ("letterbox", "black bars", "cinematic bars", "widescreen")):
-        d.look.letterbox = True
-        notes.append("letterbox bars")
-    if _has(text, ("vertical", "tiktok", "shorts", "reels", "portrait", "phone")):
-        d.aspect = "9:16"
-        notes.append("vertical 9:16")
-    elif _has(text, ("square", "instagram post")):
-        d.aspect = "1:1"
-        notes.append("square 1:1")
-
-    # Cut rate in beats: "cut every 2 beats", "every other beat", "every bar", "on every beat"
-    for clause in clauses:
-        rate = _cut_rate(clause)
-        if rate is None or _TIME.search(clause):
-            continue
-        labels = {lab for w, lab in _SECTION_WORDS.items() if re.search(r"\b" + re.escape(w) + r"\b", clause)}
-        for lab in (labels or SECTION_LABELS):
-            d.style.cut_every[lab] = rate
-        notes.append(("/".join(sorted(labels)) + ": " if labels else "") + f"a cut every {_rate_label(rate)}")
-
-    # Repeats: "no repeats", "don't repeat scenes", "never reuse clips" / "repeat the intro shot"
-    if re.search(r"\b(no|don'?t|do not|never|without|avoid|stop)\b[\w\s]{0,20}\b(repeat|repeats|repeating|reuse|reusing|duplicate|duplicates|same (clip|scene|shot)s?)\b", text):
-        d.repeats = "never"
-        notes.append("no repeated scenes")
-    elif re.search(r"\b(repeat|reuse|callback)\b", text):
-        d.repeats = "allowed"
-        notes.append("repeats allowed")
-
-    # The prompt as a timeline: "at 1:36 quicker cuts with punches, around 2:50 when the solo
-    # starts slower cuts, at the end when the note rings a held shot of him posing".
-    read_timeline(prompt, d, notes)
-
-    d.notes = notes or ["(no keywords recognised: using the style as-is)"]
-    return d
+    return _read(prompt, base)
 
 
 def _mmss(t: float) -> str:
@@ -370,184 +242,14 @@ def asks_for_effects(prompt: str) -> bool:
     return any(w in text for w in _EFFECT_WORDS) and not re.search(r"\b(no|without)\s+(effects|fx)\b", text)
 
 
-# --------------------------------------------------------------------------- #
-# Timeline reader: timed and cue-based instructions
-# --------------------------------------------------------------------------- #
-# Musical moments the free prompt can point at (resolved against what the app heard).
-CUES = [  # most specific first
-    ("hits", r"hard (drums|hits|stabs)|\b1\s*,?\s*2\s*,?\s*3\s*,?\s*4\b|\bstabs\b|\baccents\b|big hits|four hits"),
-    ("solo", r"guitar solo|\bsolo\b|\blead (guitar|melody)\b"),
-    ("drums_faster", r"drums?\b.{0,30}\b(faster|frantic|speed|speeding|busier|intense|crazy)|\bfrantic\b|double time drums"),
-    ("ringout", r"note (ends|rings|fades)|rings? out|\bringing\b|\brings\b|last note|end of the song|\bthe ending\b|\bat the end\b"),
-    ("drop", r"bass (drops|comes in|hits|kicks in)|beat (drops|comes in|kicks in)|\bthe drop\b|\bdrops\b|\bkicks in\b"),
-    ("stop", r"\b(stops|silence|goes quiet|cuts out|break)\b"),
-    ("fill", r"drum fills?|\bfills?\b"),
-    ("intro", r"\bbeginning\b|\bstart of the song\b|\bopening\b|\bintro\b|cymbals"),
-]
-_PACE_QUICK = ("quick", "quicker", "quickly", "fast", "faster", "rapid", "rapidly", "crazy", "hype", "aggressive",
-               "intense", "go off", "go hard", "picks back up", "flurry", "barrage")
-_PACE_SLOW = ("slow", "slower", "calm", "calmer", "chill", "emotional", "soft", "long shots", "longer shots", "relaxed")
-_PACE_NORMAL = ("flow", "groove", "melody", "back to normal", "normal", "regular")
-_HOLD = ("still shot", "one shot", "single shot", "hold", "held shot", "panning shot", "pan shot", "pose", "posing",
-         "one long shot", "stay on")
-_SYNC = ("coinciding", "coincide", "on the hits", "on each hit", "every hit", "each hit", "with the hits", "on the drums",
-         "with the drums", "on the kicks", "on the snare", "hit sync", "line up with", "match the hits", "with those")
-_ACTION = ("punch", "punches", "punching", "fight", "fighting", "fights", "kick", "kicking", "attack", "attacks",
-           "explosion", "explosions", "blast", "action", "combo", "beatdown", "battle")
-_EFFECT_ACTIONS = (("freeze", "freeze"), ("flash", "flash"), ("zoom", "zoom"), ("shake", "shake"), ("glitch", "rgb"),
-                   ("reverse", "reverse"), ("strobe", "invert"), ("slow mo", "slowmo"), ("slow-mo", "slowmo"),
-                   ("slowmo", "slowmo"), ("slow motion", "slowmo"), ("fade to white", "fade_white"),
-                   ("fade to black", "fade_black"), ("fade out", "fade_black"))
-_TIME_ANY = re.compile(r"\b(\d{1,2}):(\d{2})(?:\.(\d))?\b")
-
-
-def _cue_of(text: str) -> str | None:
-    for kind, pattern in CUES:
-        if re.search(pattern, text):
-            return kind
-    return None
-
-
-def _chunks(prompt: str) -> list[str]:
-    """Split a prompt into instructions: at sentence ends, at every time, and where the
-    musical cue changes ("...a still shot during the cymbals, and as soon as the bass drops...")."""
-    out = []
-    for sentence in re.split(r"[.!?;\n]+", prompt.lower()):
-        if not sentence.strip():
-            continue
-        starts = [m.start() for m in _TIME_ANY.finditer(sentence)]
-        pieces = []
-        if starts:
-            # split before each time's lead-in ("..., freeze at 0:12", "... and then around 3:09")
-            bounds = [0]
-            for st in starts[1:]:
-                lead = max(sentence.rfind(",", 0, st), sentence.rfind(" and ", 0, st), sentence.rfind(" then ", 0, st))
-                bounds.append(lead if lead > bounds[-1] and lead > starts[len(bounds) - 1] else st)
-            bounds.append(len(sentence))
-            pieces = [sentence[a:b] for a, b in zip(bounds[:-1], bounds[1:])]
-        else:
-            pieces = [sentence]
-        for piece in pieces:
-            # split time-free pieces where a different cue starts
-            tm = _TIME_ANY.search(piece)
-            if tm:
-                # Clauses before the time's own phrase are whole-edit instructions
-                # ("slow intro, vertical, freeze at 0:12" -> "freeze at 0:12").
-                lead = piece.rfind(",", 0, tm.start())
-                out.append(piece[lead + 1:] if lead > 0 else piece)
-                continue
-            marks = []
-            for kind, pattern in CUES:
-                for m in re.finditer(pattern, piece):
-                    marks.append((m.start(), kind))
-            marks.sort()
-            cut_at, last_kind = [], None
-            for pos, kind in marks:
-                if last_kind is not None and kind != last_kind:
-                    lead = max(piece.rfind(" and ", 0, pos), piece.rfind(" as soon as", 0, pos),
-                               piece.rfind(" when ", 0, pos), piece.rfind(" then ", 0, pos), piece.rfind(",", 0, pos))
-                    cut_at.append(lead if lead > (cut_at[-1] if cut_at else 0) else pos)
-                last_kind = kind
-            bounds = [0] + cut_at + [len(piece)]
-            out += [piece[a:b] for a, b in zip(bounds[:-1], bounds[1:]) if piece[a:b].strip()]
-    return [c.strip(" ,") for c in out if c.strip(" ,")]
-
-
 def read_timeline(prompt: str, d: Direction, notes: list[str], window: tuple[float, float] | None = None) -> None:
-    """Turn timed / cue-based instructions into sections, moments and drop positions.
+    from .reader import read_timeline as _read
 
-    `window` (start, end) applies the whole prompt to one selected region of the song.
-    """
-    for chunk in _chunks(prompt):
-        times = [int(m.group(1)) * 60 + int(m.group(2)) + (int(m.group(3)) / 10 if m.group(3) else 0)
-                 for m in _TIME_ANY.finditer(chunk)]
-        cue = _cue_of(chunk)
-        quick, slow = _has(chunk, _PACE_QUICK), _has(chunk, _PACE_SLOW)
-        normal = _has(chunk, _PACE_NORMAL)
-        hold = any(w in chunk for w in _HOLD)
-        sync = any(w in chunk for w in _SYNC) or cue == "hits"
-        action = _has(chunk, _ACTION)
-        effects = [a for w, a in _EFFECT_ACTIONS if w in chunk and not _negated(chunk, w)]
-        if window is None and not times and cue is None:
-            continue  # a whole-edit instruction, handled by the keyword reader
-        start = float(times[0]) if times else (window[0] if window and cue is None else -1.0)
-
-        # "the drop is at 0:51": a drop position (and nothing else unless they ask for more)
-        if cue == "drop" and times and not (quick or slow or hold or action or normal):
-            d.drops = sorted(set((d.drops or []) + [float(times[0])]))
-            notes.append(f"⏱ drop at {_mmss(times[0])}")
-            continue
-        # "freeze at 1:05", "flash at 0:42": single moments
-        if times and effects and not (quick or slow or hold or sync or action or normal or cue):
-            for a in effects:
-                d.moments.append(Moment(time=float(times[0]), action=a,
-                                        duration=1.0 if a in ("freeze", "slowmo", "shake") else 0.0))
-            notes.append(f"⏱ {_mmss(times[0])}: " + ", ".join(effects))
-            continue
-        if not (quick or slow or normal or hold or sync or action or effects or cue):
-            continue
-
-        sd = SectionDirection(start=start, end=float(times[1]) if len(times) > 1 else -1.0, cue=cue,
-                              note=chunk.strip())
-        if re.search(r"\bpan(ning|s)?\b", chunk):
-            sd.camera = "pan"
-        elif re.search(r"zoom(ing)? in(to)?\b|zoom(ing)? shot|push(ing)? in", chunk):
-            sd.camera = "zoom"
-        elif re.search(r"\bshaky\b|handheld|camera shake", chunk):
-            sd.camera = "shaky"
-        if window:
-            sd.start, sd.end, sd.fixed = window[0], window[1], True
-        if hold:
-            sd.hold, sd.cut_every = True, 8.0
-            sd.still = "still" in chunk or (cue == "intro" and "pan" not in chunk)
-            sd.energy = 0.0 if sd.still else 0.4
-        elif sync:
-            sd.sync_hits, sd.cut_every, sd.energy = True, 1.0, 1.0 if action or cue == "hits" else 0.8
-        elif quick:
-            sd.cut_every, sd.energy = (0.5 if _has(chunk, ("frantic", "crazy", "rapid", "rapidly", "flurry")) else 1.0), 1.0
-        elif slow:
-            sd.cut_every, sd.energy = 4.0, 0.2
-        elif normal:
-            sd.cut_every, sd.energy = 2.0, None   # a steady, medium groove
-        elif action or cue == "drop":
-            sd.cut_every, sd.energy = 1.0, 1.0
-        if action and not hold:
-            sd.energy = 1.0
-        fx: dict[str, float] = {}
-        if (quick or action or sync) and not hold:
-            fx = {"flash": 0.6, "zoom": 0.5, "shake": 0.6 if action else 0.3}
-        if slow:
-            fx = {"slowmo": 0.5}
-        if hold or normal:
-            fx = {}
-        for a in effects:
-            if a in EFFECTS:
-                fx[a] = 0.9
-            elif a == "fade_black" and hold:
-                d.moments.append(Moment(time=-1.0, action="fade_black", duration=1.5))  # end of the song
-        if any(w in chunk for w in ("no effects", "no flash", "clean")):
-            fx = {}
-        sd.effects = fx
-        d.sections.append(sd)
-        what = ("hold one still shot" if sd.hold and sd.still else "hold one shot" if sd.hold else
-                "cuts on each hit" if sd.sync_hits else
-                "quick cuts" if quick else "slower cuts" if slow else "back to the flow" if normal else "action")
-        where = (f"{_mmss(window[0])}–{_mmss(window[1])}" if window else
-                 (_mmss(start) if start >= 0 else "") + (f" ({_CUE_NAMES.get(cue, cue)})" if cue else ""))
-        notes.append(f"⏱ {where.strip()}: {what}" + (", action shots" if action and not sd.hold else ""))
+    _read(prompt, d, notes, window)
 
 
-_CUE_NAMES = {"hits": "hard hits", "solo": "solo", "drums_faster": "drums get faster", "ringout": "last note rings",
-              "drop": "bass drops", "stop": "stop", "fill": "drum fill", "intro": "intro"}
-
-
-def region_direction(text: str, start: float, end: float) -> tuple[SectionDirection | None, list[str]]:
+def region_direction(text: str, start: float, end: float):
     """A refinement for one selected region of the song ("quicker cuts with punches")."""
-    probe = Direction(style=copy.deepcopy(STYLES[DEFAULT_STYLE]), look=Look())
-    notes: list[str] = []
-    read_timeline(text, probe, notes, window=(start, end))
-    if not probe.sections:
-        return None, notes
-    sd = probe.sections[0]
-    sd.note = text.strip()
-    return sd, notes
+    from .reader import region_direction as _region
+
+    return _region(text, start, end)

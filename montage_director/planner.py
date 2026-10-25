@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import bisect
+import colorsys
 import copy
 import logging
 import random
@@ -10,7 +12,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .direction import Direction, SectionDirection
+from .direction import CUT_CHOICES, Direction, SectionDirection
 from .footage import Footage, Shot
 from .music import SongMap
 from .plan import Cut, EditPlan, Effect
@@ -100,7 +102,16 @@ class _Planner:
         self.timeline_notes: list[str] = []
         self.hit_aligned = 0
         self.warnings: list[str] = []
+        strong = sorted(s for _, s in song.hits)
+        big_cut = strong[int(len(strong) * 0.6)] if strong else 1.0
+        self.drums = {
+            "kick": sorted(song.kicks), "snare": sorted(song.snares), "hits": sorted(song.kicks + song.snares),
+            "big": sorted(t for t, st in song.hits if st >= big_cut), "beat": list(song.beats),
+            "bar": list(song.downbeats),
+        }
+        self.features = self._shot_features()
         self.resolve_sections()
+        self.reserved = self._reserve_matches()
 
     # ----- helpers ----------------------------------------------------------- #
     def frame_of(self, song_t: float) -> int:
@@ -151,6 +162,103 @@ class _Planner:
                 return b
         return float(t)
 
+    def _shot_features(self) -> dict[int, dict[str, float]]:
+        """Brightness, colourfulness, warmth (as ranks 0..1 within this footage) and hue, for
+        prompts like "dark scenes", "fire and explosions", "blue shots"."""
+        shots = self.shots
+        if not shots:
+            return {}
+        def ranks(vals):
+            order = np.argsort(np.argsort(vals))
+            return order / max(1, len(vals) - 1)
+        bright = ranks(np.array([s.brightness for s in shots]))
+        sat = ranks(np.array([s.saturation for s in shots]))
+        warm = ranks(np.array([(s.color[0] - s.color[2]) for s in shots], dtype=float))
+        motion = ranks(np.array([s.motion for s in shots]))
+        out = {}
+        for i, s in enumerate(shots):
+            r, g, b = (c / 255.0 for c in s.color)
+            h, _, sv = colorsys.rgb_to_hsv(r, g, b)
+            out[s.id] = {"bright": float(bright[i]), "sat": float(sat[i]), "warm": float(warm[i]), "motion": float(motion[i]),
+                         "hue": h * 360.0, "hue_sat": float(sv)}
+        return out
+
+    def _reserve_matches(self) -> dict[int, set[str]]:
+        """Shots that best match a part of the prompt ("bright explosions for the drop") are
+        kept for that part instead of being used up earlier by chance."""
+        prefs = [p for p in self.d.prefer.values() if p] + [sd.prefer for sd in self.d.sections if sd.prefer]
+        out: dict[int, set[str]] = {}
+        for p in prefs:
+            key = repr(sorted(p.items()))
+            scored = sorted(self.shots, key=lambda s: -self.content_score(s, p))
+            for s in scored[:max(3, len(scored) // 4)]:
+                if self.content_score(s, p) > 0.3:
+                    out.setdefault(s.id, set()).add(key)
+        return out
+
+    def prefer_at(self, t: float) -> dict[str, float]:
+        lab = self.label_at(t)
+        pref = dict(self.d.prefer.get("all", {}))
+        pref.update(self.d.prefer.get(lab, {}))
+        sd = self.sd_at(t)
+        if sd and sd.prefer:
+            pref.update(sd.prefer)
+        return pref
+
+    def content_score(self, s: Shot, pref: dict[str, float]) -> float:
+        """How well a shot matches what the prompt asked to see."""
+        if not pref:
+            return 0.0
+        f = self.features.get(s.id)
+        if f is None:
+            return 0.0
+        score = 0.0
+        for k in ("bright", "sat", "warm", "motion"):
+            if k in pref:
+                score += pref[k] * (f[k] - 0.5) * 2.0
+        if "hue" in pref:
+            diff = abs((f["hue"] - pref["hue"] + 180) % 360 - 180)
+            score += (np.cos(np.radians(diff)) * min(1.0, f["hue_sat"] * 3) - 0.2) * 1.5
+        for k, v in pref.items():
+            if k.startswith("camera_") and s.camera == k[7:]:
+                score += v
+        return float(score)
+
+    def drum_times(self, kind: str, a: float, b: float) -> list[float]:
+        lst = self.drums.get(kind, [])
+        i, j = bisect.bisect_left(lst, a), bisect.bisect_left(lst, b)
+        return lst[i:j]
+
+    def sync_at(self, t: float) -> str | None:
+        """Which drum the cuts follow here ("kick", "snare", "hits"), or None for the beat grid."""
+        sd = self.sd_at(t)
+        if sd is not None:
+            kind = sd.sync_on if sd.sync_hits else None
+            if kind and sd.hit_times:
+                return kind
+        else:
+            kind = self.d.sync.get(self.label_at(t)) or self.d.sync.get("all")
+        if not kind:
+            return None
+        # only where that drum is actually playing (else keep the beat grid)
+        return kind if len(self.drum_times(kind, t - 2 * self.beat, t + 2 * self.beat)) >= 2 else None
+
+    def ramp_at(self, t: float) -> tuple[float, float] | None:
+        sd = self.sd_at(t)
+        if sd is not None:
+            return (sd.start, sd.end) if sd.ramp else None
+        lab = self.label_at(t)
+        if lab in self.d.ramp:
+            sec = self.song.section_at(t)
+            return (sec.start, sec.end)
+        return None
+
+    def velocity_at(self, t: float) -> bool:
+        sd = self.sd_at(t)
+        if sd is not None:
+            return sd.velocity
+        return self.label_at(t) in self.d.velocity
+
     def usable_len(self, shot: Shot) -> float:
         """How long this shot can play before the source cuts to another scene. Pieces of
         one unbroken take continue into each other; keep clear of real scene cuts, which
@@ -158,7 +266,39 @@ class _Planner:
         return max(0.0, self.take_end.get(shot.id, shot.end) - shot.start - 0.38)
 
     # ----- the director's timeline -------------------------------------------- #
+    def section_runs(self, label: str) -> list[tuple[float, float, None]]:
+        runs: list[list[float]] = []
+        for sec in self.song.sections:
+            if sec.label != label:
+                continue
+            if runs and abs(runs[-1][1] - sec.start) < 0.05:
+                runs[-1][1] = sec.end
+            else:
+                runs.append([sec.start, sec.end])
+        return [(a, b, None) for a, b in runs]
+
     def cue_events(self, kind: str) -> list[tuple[float, float | None, list | None]]:
+        if kind.startswith("sec:"):
+            label = kind[4:]
+            runs = self.section_runs(label)
+            if label == "drop" and not runs:
+                runs = [(t, t + 32 * self.beat, None) for t in self.drops]
+            return runs
+        if kind == "predrop":
+            out = []
+            for t in self.drops:
+                sec = self.song.section_at(max(0.0, t - 0.05))
+                start = sec.start if sec.label == "build" and t - sec.start <= 32 * self.beat else t - 16 * self.beat
+                out.append((max(0.0, start), t, None))
+            return out or self.section_runs("build")
+        if kind == "vocals":
+            runs = self.section_runs("verse")
+            if runs:
+                return runs[:1]
+            return [(e["end"], None, None) for e in self.song.events_of("intro") if e.get("end")]
+        if kind == "ringout":
+            evs = [(e["time"], e.get("end"), e.get("times")) for e in self.song.events_of("ringout")]
+            return evs or [(max(self.S, self.E - 8 * self.beat), self.E, None)]
         if kind == "drop":
             if self.drops:
                 return [(t, None, None) for t in self.drops]
@@ -181,8 +321,33 @@ class _Planner:
             if sd.fixed:
                 kept.append(sd)
                 continue
+            if sd.span:
+                kind, _, n = sd.span.partition(":")
+                mid = self.S + (self.E - self.S) / 2
+                a, b = {"tail": (self.E - float(n or 0), self.E), "head": (self.S, self.S + float(n or 0)),
+                        "half": (mid, -1.0), "firsthalf": (self.S, mid)}[kind]
+                sd.start = self.S if a <= self.S + 0.01 else self.snap(max(self.S, a), bar=True)
+                sd.end = self.E if b < 0 or b >= self.E else self.snap(b, bar=True)
+                if sd.end >= self.E:
+                    sd.end = self.E
+                sd.cue = None
+                last_start = sd.start
+                kept.append(sd)
+                continue
             if sd.cue:
                 evs = [e for e in self.cue_events(sd.cue) if self.S - 0.01 <= e[0] < self.E]
+                if sd.occurrence:
+                    k = sd.occurrence
+                    pick = evs[k - 1] if 0 < k <= len(evs) else (evs[-1] if k < 0 and evs else None)
+                    if pick is None:
+                        what = sd.cue[4:] if sd.cue.startswith("sec:") else sd.cue
+                        what = {"drop": "drop / chorus", "breakdown": "bridge"}.get(what, what)
+                        nth = {1: "a first", 2: "a second", 3: "a third", 4: "a fourth"}.get(k, "that")
+                        self.warnings.append(f"Couldn't find {nth} {what} in this part of the song (found {len(evs)}), "
+                                             f"so that instruction was skipped. Add a time instead, like \"at 2:10 ...\".")
+                        continue
+                    evs = [pick]
+                    sd.start = -1.0
                 if sd.start >= 0:
                     near = [e for e in evs if abs(e[0] - sd.start) <= 6.0]
                     ev = min(near, key=lambda e: abs(e[0] - sd.start)) if near else None
@@ -194,7 +359,8 @@ class _Planner:
                 elif sd.start >= 0:
                     sd.start = self.snap(sd.start, bar=True)
                 else:
-                    name = {"drop": "bass drop"}.get(sd.cue, EVENT_LABELS.get(sd.cue, sd.cue))
+                    name = {"drop": "bass drop", "predrop": "lead-in to a drop", "vocals": "vocals"}.get(
+                        sd.cue, EVENT_LABELS.get(sd.cue, sd.cue[4:] if sd.cue.startswith("sec:") else sd.cue))
                     tip = (" or right-click the timeline and choose Mark the drop here" if sd.cue == "drop" else "")
                     self.warnings.append(f"Couldn't hear the {name} in this song, so that instruction was skipped. "
                                          f"Add a time, like \"at 0:23 ...\"{tip}.")
@@ -214,7 +380,8 @@ class _Planner:
                 pass
             elif sd.end >= 0:
                 sd.end = self.snap(sd.end, bar=True)
-            elif sd.cue_end and sd.cue in ("hits", "fill", "stop", "solo", "drums_faster", "intro", "riser"):
+            elif sd.cue_end and (sd.cue in ("hits", "fill", "stop", "solo", "drums_faster", "intro", "riser", "predrop")
+                                 or (sd.cue or "").startswith("sec:")):
                 # tied to a musical moment that has its own end: stop when it's over
                 sd.end = min(sd.cue_end, nxt if nxt is not None else self.E)
             elif nxt is not None:
@@ -230,11 +397,15 @@ class _Planner:
                 sd.end = nxt
             sd.end = min(sd.end, self.E + 1)
             if sd.cue or sd.hold or sd.sync_hits or not sd.shots:
-                what = ("hold one still shot" if sd.hold and sd.still else "hold one shot" if sd.hold else
-                        "cut on each hit" if sd.sync_hits else
+                what = sd.what or ("hold one still shot" if sd.hold and sd.still else "hold one shot" if sd.hold else
+                        f"cut on each {'hit' if sd.sync_on == 'hits' else sd.sync_on}" if sd.sync_hits else
+                        "cuts speed up" if sd.ramp else
                         "quick cuts" if (sd.cut_every or 2) <= 1 and sd.energy and sd.energy >= 0.9 else
                         "slower cuts" if (sd.cut_every or 0) >= 4 else "normal flow")
-                heard = f" ({EVENT_LABELS.get(sd.cue, sd.cue)})" if sd.cue else ""
+                cue_name = (sd.cue[4:].replace("drop", "chorus/drop") if sd.cue and sd.cue.startswith("sec:") else
+                            {"predrop": "lead-in to the drop", "vocals": "vocals come in"}.get(sd.cue or "",
+                                                                                              EVENT_LABELS.get(sd.cue, sd.cue)))
+                heard = f" ({cue_name})" if sd.cue else ""
                 self.timeline_notes.append(f"{_mmss(sd.start)}–{_mmss(min(sd.end, self.E))}{heard}: {what}")
         # Region refinements ("from 1:36 to 2:30: quicker cuts") win over everything they overlap.
         for rg in self.d.regions:
@@ -294,9 +465,15 @@ class _Planner:
 
     def cut_every_at(self, t: float) -> float:
         sd = self.sd_at(t)
-        if sd and sd.cut_every:
-            return sd.cut_every
-        return self.d.style.cut_every.get(self.label_at(t), 2.0)
+        base = sd.cut_every if sd and sd.cut_every else self.d.style.cut_every.get(self.label_at(t), 2.0)
+        ramp = self.ramp_at(t)
+        if ramp:  # quicker and quicker: full length, then half, then a quarter
+            a, b = ramp
+            p = (t - a) / max(0.1, b - a)
+            base = max(base, 2.0)
+            factor = 1.0 if p < 0.4 else (0.5 if p < 0.75 else 0.25)
+            return min(CUT_CHOICES, key=lambda c: abs(c - base * factor))
+        return base
 
     def effect_at(self, t: float, name: str) -> float:
         sd = self.sd_at(t)
@@ -313,7 +490,7 @@ class _Planner:
         bar_index = 0
         sync = [sd for sd in self.d.sections if sd.sync_hits]
         for i, b in enumerate(beats):
-            if any(sd.start <= b < sd.end for sd in sync):
+            if self.sync_at(b):
                 continue  # these cut on the drum hits instead (below)
             if b in down:
                 bar_index += 1
@@ -335,7 +512,7 @@ class _Planner:
                 # or a "roll" on every fourth bar. Constant half-beat cuts are unwatchable.
                 mid = (b + beats[i + 1]) / 2
                 near_hit = any(abs(t - mid) < 0.07 and s >= 0.45 for t, s in self.hits_near(mid))
-                if near_hit or bar_index % 4 == 3:
+                if near_hit or bar_index % 4 == 3 or self.ramp_at(b):
                     points.add(self.frame_of(mid))
         for s in self.song.sections:
             if self.S < s.start < self.E:
@@ -347,27 +524,28 @@ class _Planner:
                 f = self.frame_of(t)
                 points.add(f)
                 priority.add(f)
-        # Cuts on the actual drum hits.
+        # Cuts on the actual drum hits (the hard hits the app heard, or every kick / snare).
+        gap = max(0.18, self.beat / 2)
+        times = [t for sd in sync if sd.hit_times for t in sd.hit_times]
+        for kind in ("hits", "kick", "snare", "big"):
+            last = -9.0
+            for t in self.drum_times(kind, self.S, self.E):
+                sd = self.sd_at(t)
+                if t - last >= gap and self.sync_at(t) == kind and not (sd and sd.hit_times):
+                    times.append(t)
+                    last = t
+        for t in times:
+            if self.S < t < self.E:
+                f = self.frame_of(t)
+                points.add(f)
+                priority.add(f)
         for sd in sync:
-            if sd.hit_times:
-                times = list(sd.hit_times)
-            else:
-                drums = sorted(self.song.kicks + self.song.snares)
-                times, gap = [], max(0.18, self.beat / 2)
-                for t in drums:
-                    if sd.start <= t < sd.end and (not times or t - times[-1] >= gap):
-                        times.append(t)
-            for t in times:
-                if self.S < t < self.E:
-                    f = self.frame_of(t)
-                    points.add(f)
-                    priority.add(f)
             if self.S < sd.start < self.E:
                 points.add(self.frame_of(sd.start))
         if self.d.style.cut_on_fills:
             for ev in self.song.events_of("fill"):
                 t0 = ev["time"]
-                if not (self.S < t0 < self.E) or self.hold_at(t0) or any(sd.start <= t0 < sd.end for sd in sync):
+                if not (self.S < t0 < self.E) or self.hold_at(t0) or self.sync_at(t0):
                     continue
                 if self.cut_every_at(t0) > 2 or self.label_at(t0) in ("intro", "outro", "breakdown"):
                     continue
@@ -447,7 +625,8 @@ class _Planner:
             return float(np.clip(sd.energy, 0, 1))
         music = self.song.energy_at(t0, t1)
         section = self.song.section_at(t0).energy
-        return float(np.clip(0.55 * music + 0.45 * section + self.d.style.energy_bias, 0, 1))
+        wants = self.prefer_at(t0).get("motion", 0.0)  # "fight scenes" / "close-ups" for a whole part
+        return float(np.clip(0.55 * music + 0.45 * section + self.d.style.energy_bias + 0.4 * wants, 0, 1))
 
     def allowed(self, s: Shot) -> bool:
         """Repeat rules: never the same moment twice; a scene comes back only when the
@@ -471,6 +650,7 @@ class _Planner:
 
     def pick_shot(self, t0: float, need: float, prev: Cut | None) -> Shot:
         sd = self.sd_at(t0)
+        pref = self.prefer_at(t0)
         if sd and sd.hold and not sd.shots:
             pool = [s for s in self.shots if self.allowed(s)] or list(self.shots)
             def hold_score(s):
@@ -478,7 +658,7 @@ class _Planner:
                 calm = (1 - s.motion) if sd.still else 1 - abs(s.motion - 0.35)
                 camera = 2.0 if sd.camera and s.camera == sd.camera else 0.0
                 return (3.0 * fits + 1.5 * calm + camera + (0.5 if s.static and sd.still else 0)
-                        - 3.0 * s.text + self.rng.gauss(0, 0.1))
+                        - 3.0 * s.text + 1.5 * self.content_score(s, pref) + self.rng.gauss(0, 0.1))
             return max(pool, key=hold_score)
         if sd and sd.shots:
             # The director's list for this section, in order, each scene once.
@@ -508,6 +688,14 @@ class _Planner:
         clean = [s for s in pool if s.text < 0.85]   # full-screen title cards only when nothing else is left
         if clean:
             pool = clean
+        if pref and self.d.repeats != "never":
+            # Nothing fresh looks like what was asked for here: bring back a good match
+            # (spaced out like any repeat) rather than showing the wrong kind of shot.
+            best = max((self.content_score(s, pref) for s in pool), default=-9.0)
+            if best < 0.3:
+                spacing = max(6, self.n_groups // 4)
+                pool += [s for s in self.shots if s not in pool and self.content_score(s, pref) > 0.6
+                         and self.cut_i - self.group_last.get(s.group, -99) > spacing]
         if not pool:  # tiny footage: fall back to anything not shown in the last few cuts
             pool = [s for s in self.shots if self.cut_i - self.group_last.get(s.group, -99) > 2] or self.shots
         # Prefer shots long enough for the cut, so it never runs on into the next scene
@@ -518,7 +706,9 @@ class _Planner:
         best, best_score = None, -1e9
         for s in pool:
             score = -2.2 * abs(s.motion - target)
-            score -= 1.4 * self.uses.get(s.id, 0) + 2.0 * self.group_uses.get(s.group, 0)
+            match = self.content_score(s, pref) if pref else 0.0
+            again = 0.35 if match > 0.6 else 1.0  # a shot that is exactly what was asked for may come back
+            score -= again * (1.4 * self.uses.get(s.id, 0) + 2.0 * self.group_uses.get(s.group, 0))
             if prev is not None:
                 if s.id == prev.shot:
                     score -= 4.0
@@ -529,6 +719,11 @@ class _Planner:
             score -= 1.5 * s.text   # captions, logos, title cards
             if sd and sd.camera and s.camera == sd.camera:
                 score += 1.0
+            if pref:
+                score += 1.8 * match
+            keys = self.reserved.get(s.id)
+            if keys and (not pref or repr(sorted(pref.items())) not in keys):
+                score -= 0.9  # saved for the part of the song that asked for it
             if s.duration < need * 0.9:
                 score -= 0.6
             score += self.rng.gauss(0, 0.25)
@@ -596,6 +791,7 @@ class _Planner:
         if not self.shots:
             raise ValueError("There are no usable shots in the footage.")
         points = self.cut_points()
+        self.down_frames = {self.frame_of(b) for b in self.song.downbeats if self.S <= b < self.E}
         cuts: list[Cut] = []
         prev = None
         for f0, f1 in zip(points[:-1], points[1:]):
@@ -603,7 +799,11 @@ class _Planner:
             dur = (f1 - f0) / self.fps
             label = self.label_at(t0)
             speed, reverse = 1.0, False
-            if dur >= 0.4 and self.rng.random() < self.effect_at(t0, "slowmo") * 0.7:
+            if self.velocity_at(t0) and not self.d.style.pure:
+                # velocity edit: clips race, then slow right down on the big beats
+                on_big = f0 in self.down_frames or any(abs(t - t0) < 0.06 and st >= 0.6 for t, st in self.hits_near(t0))
+                speed = 0.45 if on_big and dur >= 0.3 else (1.7 if dur >= 0.2 else 1.0)
+            elif dur >= 0.4 and self.rng.random() < self.effect_at(t0, "slowmo") * 0.7:
                 speed = 0.5
             elif dur >= 0.3 and self.rng.random() < self.effect_at(t0, "reverse") * 0.5:
                 reverse = True
@@ -700,6 +900,8 @@ class _Planner:
             if s > 0.85 and self.rng.random() < self.effect_at(t, "invert") * 0.5:
                 self.add(cuts, self.frame_of(t), "invert", 2)
 
+        self.apply_drum_fx(cuts)
+
         # Section entrances.
         for sec in self.song.sections:
             if not (self.S < sec.start < self.E):
@@ -732,6 +934,36 @@ class _Planner:
         if not st.pure:
             last = cuts[-1]
             self.add(cuts, max(last.f0, self.total - self.fps), "fade_black", self.fps, 1.0, "black")
+
+    def apply_drum_fx(self, cuts: list[Cut]) -> None:
+        """Effects the prompt tied to a drum: "flash on every snare", "slow motion on the big hits"."""
+        jobs = [(e["effect"], e["drum"], e.get("label"), None) for e in self.d.drum_fx]
+        jobs += [(eff, drum, None, sd) for sd in self.d.sections for eff, drum in sd.drum_fx.items()]
+        beat_f = max(2, int(round(self.beat * self.fps)))
+        for eff, drum, label, sd in jobs:
+            a, b = (sd.start, sd.end) if sd else (self.S, self.E)
+            gap = 0.22 if eff in ("flash", "rgb", "invert") else 0.4
+            last = -9.0
+            for t in self.drum_times(drum, max(a, self.S), min(b, self.E)):
+                if t - last < gap or (label and self.label_at(t) != label):
+                    continue
+                if sd is None and self.sd_at(t) is not None and self.sd_at(t).hold and eff not in ("flash",):
+                    continue
+                f = self.frame_of(t)
+                last = t
+                if eff in ("slowmo", "reverse"):
+                    c = cuts[self.cut_index_at(cuts, f)]
+                    if abs(c.f0 - f) <= 2:
+                        if eff == "slowmo":
+                            c.speed = min(c.speed, 0.5)
+                        else:
+                            c.reverse = True
+                    continue
+                frames = {"flash": max(2, self.d.style.flash_frames), "rgb": 4, "invert": 2,
+                          "zoom": beat_f, "shake": beat_f}.get(eff, 3)
+                dense = len(self.drum_times(drum, t - 2 * self.beat, t + 2 * self.beat)) > 4
+                strength = {"flash": 0.55 if dense else 0.85, "zoom": 0.55 if dense else 0.75, "shake": 0.6}.get(eff, 0.8)
+                self.add(cuts, f, eff, 2 if eff == "flash" and dense else frames, strength)
 
     def split_freeze(self, cuts: list[Cut], i: int, hold: int) -> None:
         """Freeze the last `hold` frames of cut i (the beat before a drop)."""
