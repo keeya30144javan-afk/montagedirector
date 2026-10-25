@@ -105,6 +105,17 @@ class Project:
             aspect = s.aspect if s.aspect != "auto" else "16:9 (or vertical 9:16 if the idea asks for it)"
             self.direction = self.ai.direct(s.prompt, self.song, self.footage, start, end, aspect, s.style,
                                             cancel, progress)
+            # The free reader's drum-level reading backs the AI up ("cut on the kick in the chorus",
+            # "flash on every snare"): parts of the song, which the AI's timed sections can't name.
+            free = read_prompt(s.prompt, style_direction(s.style))
+            d = self.direction
+            for lab, kind in free.sync.items():
+                d.sync.setdefault(lab, kind)
+            known = {(e["effect"], e["drum"]) for sd in d.sections for e in
+                     ({"effect": k, "drum": v} for k, v in sd.drum_fx.items())}
+            d.drum_fx += [e for e in free.drum_fx if (e["effect"], e["drum"]) not in known]
+            d.ramp = sorted(set(d.ramp) | set(free.ramp))
+            d.velocity = sorted(set(d.velocity) | set(free.velocity))
         else:
             self.direction = read_prompt(s.prompt, style_direction(s.style))
             self.direction.summary = ""

@@ -592,7 +592,6 @@ GLOBAL_HINTS = [
      "simple: lighter effects"),
     (r"\bsmooth(?:er)?(?: transitions)?\b|\bsoft transitions\b|\bfluid\b|\bseamless\b", "smooth",
      "smooth: soft blur transitions, gentler flashes"),
-    (r"\b(?:tiktok|edit) (?:style|edit)\b|\bvelocity\b", "velocity", "velocity edit on the loud parts"),
     (r"\bfreeze(?: frame)? (?:right )?(?:before|on|at|into) the drop\b", "freeze_drop", "freeze frame before the drop"),
     (r"\bwhite (?:flash|fade) (?:in)?to the drop\b|\bfade (?:in )?from white\b", "white_drop", "white fade into the drop"),
 ]

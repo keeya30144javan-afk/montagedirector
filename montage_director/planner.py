@@ -234,11 +234,13 @@ class _Planner:
     def sync_at(self, t: float) -> str | None:
         """Which drum the cuts follow here ("kick", "snare", "hits"), or None for the beat grid."""
         sd = self.sd_at(t)
-        if sd is not None:
-            kind = sd.sync_on if sd.sync_hits else None
-            if kind and sd.hit_times:
+        kind = None
+        if sd is not None and sd.sync_hits:
+            kind = sd.sync_on
+            if sd.hit_times:
                 return kind
-        else:
+        elif sd is None or not (sd.hold or sd.ramp or sd.fixed or sd.shots):
+            # a song-part instruction ("cut on the kick in the chorus") combines with a timed one
             kind = self.d.sync.get(self.label_at(t)) or self.d.sync.get("all")
         if not kind:
             return None
@@ -257,7 +259,7 @@ class _Planner:
 
     def velocity_at(self, t: float) -> bool:
         sd = self.sd_at(t)
-        if sd is not None:
+        if sd is not None and (sd.velocity or sd.hold or sd.fixed):
             return sd.velocity
         return self.label_at(t) in self.d.velocity
 

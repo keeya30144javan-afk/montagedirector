@@ -93,6 +93,15 @@ EDIT_SCHEMA = _obj({
         "shots": {"type": "array", "items": {"type": "integer"},
                   "description": "shot ids for this section, in playback order, each used once"},
         "effects": _obj({k: {"type": "number", "description": "0 to 1"} for k in EFFECTS}),
+        "cut_on": {"type": "string", "enum": ["beat", "hits", "kick", "snare"],
+                   "description": "beat = the beat grid (cut_every_beats); hits / kick / snare = cut on the drum hits "
+                                  "the app heard instead"},
+        "speed_up": {"type": "boolean", "description": "cuts get quicker and quicker through this section (a build-up)"},
+        "velocity": {"type": "boolean", "description": "velocity edit: clips race, then slow down on the big beats"},
+        "effects_on_drums": {"type": "array", "items": _obj({
+            "effect": {"type": "string", "enum": ["flash", "zoom", "shake", "rgb", "invert", "slowmo"]},
+            "drum": {"type": "string", "enum": ["kick", "snare", "hits", "big"]},
+        }), "description": "an effect on every hit of a drum in this section (big = only the strongest hits)"},
         "note": {"type": "string", "description": "one short line about the idea for this section"},
     })},
     "moments": {"type": "array", "items": _obj({
@@ -133,7 +142,8 @@ How your plan is used:
 - A planner places every cut exactly on the beat. You choose how many beats each cut lasts per section (cut_every_beats: 0.5 = double-time, 1 = every beat, 2, 4, or 8 = long held shots). Think in seconds: a cut shorter than about 0.35 s is hard to read, so on a fast song (feel.pace "fast") use 2 beats where you would otherwise use 1, and on a song without a steady drum beat (feel.steady false) cut on bars (4) or longer.
 - When the user refers to a moment in the music ("when the solo starts", "the hard hits at the end", "when the drums get faster"), use the matching heard_events time, not a guess.
 - To hold ONE shot for a whole section (a still opening shot, a final pose), give that section exactly one shot and cut_every_beats 8; a shot shorter than the section is slowed down to fit.
-- Hits the user wants matched one by one (for example four hard drum hits) need cut_every_beats 1 for that bar, plus a flash or zoom moment on each hit.
+- Cutting on the drums: cut_on "hits" cuts on every drum hit the app heard in that section (for the user's "edits on the hits", "coinciding with the drums", or a heard_events "hits" group), "kick" or "snare" on just that drum ("cut on the kick", "on the 808s", "on the snare"). Use "beat" otherwise.
+- effects_on_drums puts an effect on every hit of a drum in that section ("flash on every snare" = flash + snare; "shake on the 808s" = shake + kick; "slow motion on the big hits" = slowmo + big). speed_up makes the cuts get quicker through the section (build-ups into a drop). velocity makes it a velocity edit.
 - In each section, list the shots to use in playback order. Each listed shot is used at most once. When a section needs more cuts than you listed, the planner fills them with unused shots that match the section's intensity, so list enough shots for fast sections (roughly one per cut).
 - Shots with the same scene number are the same moment (pieces of one take, or the same clip shown twice in a compilation). Using two of them reads as a repeat: pick one per scene unless the user wants repeats.
 - repeats: "never" if the user doesn't want any scene twice, "allowed" only if they ask for repeats or callbacks, otherwise "rarely".
@@ -503,10 +513,16 @@ def to_direction(raw: dict, footage: Footage, start: float, end: float) -> Direc
             continue
         every = min(CUT_CHOICES, key=lambda c: abs(c - float(s.get("cut_every_beats", 2))))
         fx = {k: float(np.clip((s.get("effects") or {}).get(k, 0), 0, 1)) for k in EFFECTS}
+        cut_on = s.get("cut_on") if s.get("cut_on") in ("hits", "kick", "snare") else None
+        drum_fx = {e["effect"]: e["drum"] for e in s.get("effects_on_drums") or []
+                   if e.get("effect") in ("flash", "zoom", "shake", "rgb", "invert", "slowmo")
+                   and e.get("drum") in ("kick", "snare", "hits", "big")}
         sections.append(SectionDirection(
             start=a, end=b, cut_every=every,
             energy=float(np.clip(s.get("intensity", 0.5), 0, 1)),
-            shots=[i for i in s.get("shots", []) if i in valid], effects=fx, note=s.get("note", "")))
+            shots=[i for i in s.get("shots", []) if i in valid], effects=fx, note=s.get("note", ""),
+            sync_hits=cut_on is not None, sync_on=cut_on or "hits", ramp=bool(s.get("speed_up")),
+            velocity=bool(s.get("velocity")), drum_fx=drum_fx))
         if s.get("note"):
             notes.append(f"{_mmss(a)}–{_mmss(b)}: {s['note']}")
     # Close gaps so the whole range is directed.

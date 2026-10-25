@@ -371,3 +371,24 @@ def test_pacing_follows_the_feel_of_the_song(media, tmp_path):
     assert avg(calm) >= 0.85, "no drum beat: never faster than about a cut a second"
     # what the user asks for exactly is kept exactly
     assert abs(avg(fast, "cut on every beat") - avg(base, "cut on every beat")) < 0.05
+
+
+def test_ai_can_cut_on_drums_and_put_effects_on_them(analysed):
+    song, footage = analysed
+    raw = {"summary": "s", "style": "hype", "look": {"grade": "none", "glow": 0, "trails": 0, "letterbox": False, "grain": 0},
+           "sections": [{"start": 0, "end": 8, "cut_every_beats": 2, "intensity": 0.3, "shots": [], "effects": {},
+                         "cut_on": "beat", "speed_up": True, "velocity": False, "effects_on_drums": [], "note": ""},
+                        {"start": 8, "end": 20, "cut_every_beats": 1, "intensity": 1, "shots": [], "effects": {},
+                         "cut_on": "kick", "speed_up": False, "velocity": False,
+                         "effects_on_drums": [{"effect": "flash", "drum": "kick"}, {"effect": "explode", "drum": "kick"}],
+                         "note": ""}],
+           "moments": [], "avoid_shots": [], "repeats": "rarely", "drops": [8.0]}
+    d = to_direction(raw, footage, 0, song.duration)
+    a, b = d.sections
+    assert a.ramp and not a.sync_hits and b.sync_hits and b.sync_on == "kick" and b.drum_fx == {"flash": "kick"}
+    plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=3))
+    starts = [c.f0 / 24 for c in plan.cuts if 8.5 <= c.f0 / 24 < 19]
+    kicks = [k for k in song.kicks if 8.5 <= k < 19]
+    assert kicks and sum(1 for t in starts if min(abs(t - k) for k in kicks) <= 1 / 24 + 0.01) >= 0.8 * len(starts)
+    flashes = [(c.f0 + e.frame) / 24 for c in plan.cuts for e in c.effects if e.kind == "flash" and c.f0 / 24 >= 8.5]
+    assert len(flashes) >= 0.6 * len(kicks)
