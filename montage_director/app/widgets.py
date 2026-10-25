@@ -158,6 +158,8 @@ class Timeline(QWidget):
 
     seek = Signal(float)  # seconds into the edit
     drops_changed = Signal(list)  # song seconds, after the user adds or removes a drop
+    region_selected = Signal(float, float)  # song seconds; (0, 0) when the selection is cleared
+    region_removed = Signal(float)          # song second inside a section edit to undo
 
     def __init__(self):
         super().__init__()
@@ -169,8 +171,13 @@ class Timeline(QWidget):
         self.end = 1.0
         self.position = 0.0
         self.drops: list[float] | None = None  # None = the song analysis' drops
+        self.selection: tuple[float, float] | None = None   # song seconds
+        self.regions: list[tuple[float, float, str]] = []    # section edits: (start, end, label)
+        self._press_x: float | None = None
+        self._dragging = False
         self.setMouseTracking(True)
-        self.setToolTip("Click to jump there. Right-click to mark or remove a beat drop.")
+        self.setToolTip("Click to jump there. Drag across part of the song to refine just that part. "
+                        "Right-click to mark a drop or undo a section edit.")
 
     def current_drops(self) -> list[float]:
         if self.drops is not None:
@@ -198,8 +205,18 @@ class Timeline(QWidget):
         add = menu.addAction(f"Mark the drop here ({int(t // 60)}:{t % 60:04.1f})")
         rem = menu.addAction("Remove this drop") if near else None
         reset = menu.addAction("Use the detected drops again") if self.drops is not None else None
+        t_raw = self._song_time(e.pos().x())
+        in_region = next((r for r in self.regions if r[0] <= t_raw < r[1]), None)
+        undo = menu.addAction(f"Undo the section edit here ({in_region[2][:30]})") if in_region else None
+        clear = menu.addAction("Clear the selection") if self.selection else None
         chosen = menu.exec(e.globalPos())
         if chosen is None:
+            return
+        if chosen is undo:
+            self.region_removed.emit(t_raw)
+            return
+        if chosen is clear:
+            self.clear_selection()
             return
         if chosen is add:
             drops = sorted(set(drops + [round(t, 3)]))
@@ -233,10 +250,50 @@ class Timeline(QWidget):
         span = max(self.end - self.start, 1e-6)
         return (song_t - self.start) / span * w
 
+    def set_regions(self, regions: list[tuple[float, float, str]]) -> None:
+        self.regions = regions
+        self.update()
+
+    def clear_selection(self) -> None:
+        if self.selection is not None:
+            self.selection = None
+            self.update()
+            self.region_selected.emit(0.0, 0.0)
+
     def mousePressEvent(self, e):
-        if self.end > self.start:
+        if e.button() != Qt.LeftButton or self.end <= self.start:
+            return
+        self._press_x, self._dragging = e.position().x(), False
+
+    def mouseMoveEvent(self, e):
+        if self._press_x is None or not self.song:
+            return
+        if not self._dragging and abs(e.position().x() - self._press_x) < 6:
+            return
+        self._dragging = True
+        a, b = sorted((self._song_time(self._press_x), self._song_time(e.position().x())))
+        self.selection = (a, b)
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._press_x is None:
+            return
+        if self._dragging and self.selection:
+            a, b = self.selection
+            beats = self.song.beats if self.song else []
+            if beats:  # a selection starts and ends on a beat
+                a = min(beats, key=lambda x: abs(x - a))
+                b = min(beats, key=lambda x: abs(x - b))
+            if b - a >= 0.4:
+                self.selection = (a, b)
+                self.region_selected.emit(a, b)
+            else:
+                self.clear_selection()
+        else:
             frac = min(1.0, max(0.0, e.position().x() / max(1, self.width())))
             self.seek.emit(frac * (self.end - self.start))
+        self._press_x, self._dragging = None, False
+        self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -308,6 +365,38 @@ class Timeline(QWidget):
             x = self._x(t, w)
             p.drawText(QRectF(x - 20, h - 15, 40, 14), Qt.AlignCenter, f"{int(t // 60)}:{int(t % 60):02d}")
             t += step
+        # What the app heard (events), as small labelled ticks along the top.
+        marks = {"intro": "intro", "drums_faster": "drums↑", "stop": "stop", "riser": "riser", "solo": "solo",
+                 "hits": "hits", "ringout": "ring", "fill": ""}
+        tiny = QFont(self.font())
+        tiny.setPointSizeF(7)
+        p.setFont(tiny)
+        for ev in song.events:
+            if not (self.start <= ev["time"] <= self.end):
+                continue
+            x = self._x(ev["time"], w)
+            col = QColor(theme.WARN if ev["kind"] != "fill" else theme.MUTED)
+            p.setPen(QPen(col, 1))
+            p.drawLine(QPointF(x, top), QPointF(x, top + (6 if ev["kind"] == "fill" else 12)))
+            label = marks.get(ev["kind"], "")
+            if label:
+                p.drawText(QRectF(x + 2, top + 1, 60, 12), Qt.AlignLeft | Qt.AlignVCenter, label)
+        # Section edits the user made, and the current selection.
+        for a, b, label in self.regions:
+            x0, x1 = self._x(max(a, self.start), w), self._x(min(b, self.end), w)
+            p.setPen(QPen(QColor(theme.OK), 1.5))
+            p.setBrush(QColor(69, 212, 131, 40))
+            p.drawRect(QRectF(x0, top, max(2, x1 - x0), wave_h))
+            p.drawText(QRectF(x0 + 3, top + wave_h - 14, max(0, x1 - x0 - 4), 12), Qt.AlignLeft | Qt.AlignVCenter,
+                       label)
+        if self.selection:
+            a, b = self.selection
+            x0, x1 = self._x(a, w), self._x(b, w)
+            p.setPen(QPen(QColor(theme.ACCENT_HI), 2))
+            p.setBrush(QColor(139, 108, 255, 70))
+            p.drawRect(QRectF(x0, top - 1, max(2, x1 - x0), wave_h + 2))
+        p.setBrush(Qt.NoBrush)
+        p.setFont(small)
         # Playhead
         if self.plan:
             x = self._x(self.start + self.position, w)

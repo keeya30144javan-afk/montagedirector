@@ -98,7 +98,7 @@ def test_no_scene_repeats_until_the_footage_runs_out(analysed):
 def test_timed_instruction_starts_a_fast_section_on_the_beat(analysed):
     song, footage = analysed
     d = read_prompt("at 0:12 quick edits of fighting", style_direction("clean"))
-    assert [(s.start, s.cut_every, s.energy) for s in d.sections] == [(12.0, 0.5, 1.0)]
+    assert [(s.start, s.cut_every, s.energy) for s in d.sections] == [(12.0, 1.0, 1.0)]  # quick = every beat
     assert d.style.cut_every == STYLES["clean"].cut_every, "a timed sentence must not change the whole edit"
     plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=6))
     starts = [c.f0 / 24 for c in plan.cuts]
@@ -180,3 +180,53 @@ def test_ai_style_off_grid_times_land_on_the_beat(analysed):
         s = footage.shots[c.shot]
         if not c.freeze:
             assert c.src_start + c.frames / 24 * c.speed <= s.end + 0.01 or c.speed <= 0.25
+
+
+def test_the_app_hears_the_band(band_song):
+    song = analyze_song(band_song)
+    beat = 60 / song.tempo
+    found = {k: [e for e in song.events if e["kind"] == k] for k in
+             ("intro", "fill", "drums_faster", "stop", "solo", "hits", "ringout")}
+    assert found["intro"] and abs(found["intro"][0]["end"] - 8.0) < 1.0
+    assert any(abs(e["time"] - 15.5) < 0.3 for e in found["fill"])
+    assert any(abs(e["time"] - 24.0) < 2 * beat for e in found["drums_faster"])
+    assert any(abs(e["time"] - 37.0) < 0.5 for e in found["stop"])
+    assert any(abs(e["time"] - 40.0) < 2.5 and abs(e["end"] - 56.0) < 2.5 for e in found["solo"])
+    hits = found["hits"][0]["times"]
+    assert 4 <= len(hits) <= 5 and all(abs(a - b) < 0.1 for a, b in zip(hits, (56.0, 56.5, 57.0, 57.5)))
+    assert any(abs(e["time"] - 68.0) < 0.5 for e in found["ringout"])
+
+
+def test_prompt_timeline_lands_on_what_the_app_heard(band_song, media):
+    song, footage = analyze_song(band_song), analyze_footage([media])
+    prompt = ("the beginning should have a still shot for the length of those cymbals and as soon as the bass drops "
+              "the action should happen. around 0:39 when the guitar solo starts slower cuts, then around 0:55 the "
+              "hard drums hitting 1,2,3,4 i want edits coinciding with those. at the end when the note rings a held shot")
+    plan = make_plan(song, footage, read_prompt(prompt, style_direction("hype")), OutputSettings(fps=24, seed=11))
+    starts = [c.f0 / 24 for c in plan.cuts]
+    assert plan.cuts[0].f1 / 24 > 7.0, "the cymbal intro is one held shot"
+    for hit in (56.0, 56.5, 57.0, 57.5):
+        assert min(abs(t - hit) for t in starts) < 0.1, f"no cut on the hard hit at {hit}"
+    solo = [c for c in plan.cuts if 41 <= c.f0 / 24 < 55]
+    drop = [c for c in plan.cuts if 9 <= c.f0 / 24 < 23]
+    assert sum(c.frames for c in solo) / len(solo) > 1.5 * sum(c.frames for c in drop) / len(drop)
+    assert plan.cuts[-1].f0 / 24 <= 68.5, "the ending is held from the moment the last note rings"
+    assert any("solo" in n for n in plan.timeline)
+
+
+def test_refining_one_region_changes_only_that_region(analysed):
+    from montage_director.project import Project, Settings
+
+    song, footage = analysed
+    proj = Project(settings=Settings(style="hype", seed=12))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    before = proj.make_plan()
+    proj.refine_region("hold one shot", 10.0, 15.0)
+    after = proj.make_plan()
+    fps = after.fps
+    inside = [c for c in after.cuts if 10.0 <= c.f0 / fps < 14.9]
+    assert len(inside) == 1, "the selected part should be one held shot"
+    outside = lambda plan: [(c.f0, c.shot) for c in plan.cuts if c.f1 / plan.fps <= 9.5]
+    assert outside(before) == outside(after), "parts before the selection must not change"
+    assert proj.remove_region(12.0) and not proj.direction.regions

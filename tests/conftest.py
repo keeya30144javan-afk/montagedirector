@@ -87,3 +87,61 @@ def edm_song(tmp_path_factory):
     subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "f32le", "-ar", str(sr),
                     "-ac", "1", "-i", "-", str(out)], input=y.tobytes(), check=True)
     return out
+
+
+@pytest.fixture(scope="session")
+def band_song(tmp_path_factory):
+    """120 BPM rock-style track with known events: cymbal intro until 8.0, fill at 15.5,
+    drums faster 24-32, stop 37-38, lead solo 40-56, four hard hits at 56.0-57.5,
+    last note rings out from 68.0."""
+    import imageio_ffmpeg
+
+    out = tmp_path_factory.mktemp("band") / "band.mp3"
+    sr = 22050; beat = 0.5; dur = 74.0
+    t = np.arange(int(sr * dur)) / sr
+    y = np.zeros_like(t); rng = np.random.default_rng(7)
+    def add(start, sig):
+        i = int(start * sr); j = min(len(y), i + len(sig)); y[i:j] += sig[:j - i]
+    def kick(g=1.0):
+        tt = np.arange(int(0.35 * sr)) / sr; return g * np.sin(2*np.pi*(45 + 110*np.exp(-30*tt))*tt) * np.exp(-9*tt)
+    def snare(g=0.6):
+        tt = np.arange(int(0.25 * sr)) / sr; return g * (rng.standard_normal(len(tt)) * np.exp(-22*tt) + 0.3*np.sin(2*np.pi*190*tt)*np.exp(-30*tt))
+    def hat(g=0.18):
+        tt = np.arange(int(0.06 * sr)) / sr; n = rng.standard_normal(len(tt)); n = np.diff(np.r_[0, n]); return g * n * np.exp(-70*tt)
+    def groove(a, b, dense=False, light=False):
+        k = 0; x = a
+        while x < b - 1e-6:
+            pos = k % 8   # 8th notes
+            if dense:  # drums faster: kick+snare on every 8th
+                add(x, kick(0.8)); add(x, snare(0.45 if pos % 2 else 0.3))
+            else:
+                if pos in (0, 4): add(x, kick(0.55 if light else 1.0))
+                if pos in (2, 6): add(x, snare(0.35 if light else 0.6))
+            add(x, hat()); x += beat / 2; k += 1
+    # 0-8 intro: cymbal wash only + soft pad
+    m = t < 8; y[m] += 0.05 * rng.standard_normal(m.sum()) * np.exp(-((t[m] % 2) * 1.5)) + 0.05*np.sin(2*np.pi*220*t[m])
+    bass_line = lambda a, b, f=55: ((t >= a) & (t < b)) * 0.28 * np.sin(2*np.pi*f*t)
+    groove(8, 24); y += bass_line(8, 24)
+    # fill: 16th-note snares in the last beat before 16.0
+    for i in range(4): add(15.5 + i * 0.125, snare(0.7))
+    groove(24, 32, dense=True); y += bass_line(24, 32)
+    groove(32, 37); y += bass_line(32, 37)
+    # stop 37.0-38.0: silence
+    groove(38, 40); y += bass_line(38, 40)
+    groove(40, 56, light=True); y += bass_line(40, 56, 82)
+    # solo 40-56: bright melodic lead with vibrato
+    notes = [1320, 1480, 1660, 1760, 1980, 1760, 1660, 1480]
+    for i, f in enumerate(notes * 2):
+        a = 40 + i * 1.0; mm = (t >= a) & (t < a + 1.0); tt = t[mm] - a
+        y[mm] += 0.22 * np.sin(2*np.pi*f*tt + 6*np.sin(2*np.pi*5.5*tt)) * np.minimum(1, tt*20)
+    # 4 hard hits with silence between: 56.0 56.5 57.0 57.5
+    for x in (56.0, 56.5, 57.0, 57.5): add(x, kick(1.2)); add(x, snare(0.9))
+    groove(58, 68); y += bass_line(58, 68)
+    # last hit at 68, then a chord rings out to the end
+    add(68.0, kick(1.0)); add(68.0, snare(0.7))
+    mm = t >= 68.0; tt = t[mm] - 68.0
+    y[mm] += sum(0.12 * np.sin(2*np.pi*f*tt) for f in (220, 277, 330, 440)) * np.exp(-tt / 2.5)
+    y = (y / np.abs(y).max()).astype(np.float32)
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "f32le", "-ar", str(sr), "-ac", "1",
+                    "-i", "-", "-b:a", "192k", str(out)], input=y.tobytes(), check=True)
+    return out

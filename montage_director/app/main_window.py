@@ -110,6 +110,9 @@ class SettingsDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
+    REFINE_HINT = ("Tell it what to change, e.g. \"more flashes in the drop\". Or drag across the timeline "
+                   "to change just that part.")
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
@@ -297,6 +300,8 @@ class MainWindow(QMainWindow):
         self.timeline = Timeline()
         self.timeline.seek.connect(self.seek_seconds)
         self.timeline.drops_changed.connect(self.drops_changed)
+        self.timeline.region_selected.connect(self.region_selected)
+        self.timeline.region_removed.connect(self.region_removed)
         v.addWidget(self.timeline)
 
         self.summary = QLabel("")
@@ -308,9 +313,14 @@ class MainWindow(QMainWindow):
         v.addWidget(self.summary)
 
         refine = QHBoxLayout()
+        self.region_chip = QPushButton("")
+        self.region_chip.setToolTip("Refining only this part of the song. Click to refine the whole edit instead.")
+        self.region_chip.setStyleSheet(f"background: #241f3d; border: 1px solid {theme.ACCENT}; color: {theme.TEXT};")
+        self.region_chip.clicked.connect(self.timeline.clear_selection)
+        self.region_chip.hide()
+        refine.addWidget(self.region_chip)
         self.refine_edit = QLineEdit()
-        self.refine_edit.setPlaceholderText("Tell it what to change, e.g. \"more flashes in the drop\" or "
-                                            "\"slower intro\" or \"freeze at 0:48\"")
+        self.refine_edit.setPlaceholderText(self.REFINE_HINT)
         self.refine_edit.returnPressed.connect(self.refine)
         refine.addWidget(self.refine_edit, 1)
         self.refine_btn = QPushButton("Refine")
@@ -541,11 +551,58 @@ class MainWindow(QMainWindow):
 
         self._run("make", work, lambda _: self._show_result())
 
+    def region_selected(self, a: float, b: float):
+        if b <= a:
+            self.region = None
+            self.region_chip.hide()
+            self.refine_edit.setPlaceholderText(self.REFINE_HINT)
+            return
+        self.region = (a, b)
+        self.region_chip.setText(f"{_mmss(a)}–{_mmss(b)}  ✕")
+        self.region_chip.show()
+        self.refine_edit.setPlaceholderText(f"What should happen from {_mmss(a)} to {_mmss(b)}? e.g. "
+                                            "\"quicker cuts with punches\", \"hold one shot\", \"cut on the hits\"")
+        self.refine_edit.setFocus()
+
+    def region_removed(self, t: float):
+        if self.job is not None or not self.project.remove_region(t):
+            return
+        self._replan("Undoing that section edit...")
+
+    def _replan(self, message: str):
+        proj = self.project
+
+        def work(cancel, progress):
+            progress(0.05, message)
+            proj.make_plan()
+            proj.render_preview(cancel, lambda f, m: progress(0.1 + 0.9 * f, m))
+            return True
+
+        self._run("refine", work, lambda _: self._show_result())
+
     def refine(self):
         text = self.refine_edit.text().strip()
         if not text or self.project.plan is None:
             return
         proj = self.project
+        region = getattr(self, "region", None)
+        if region:
+            a, b = region
+
+            def work_region(cancel, progress):
+                progress(0.05, f"Refining {_mmss(a)}–{_mmss(b)}...")
+                notes = proj.refine_region(text, a, b)
+                proj.make_plan()
+                proj.render_preview(cancel, lambda f, m: progress(0.15 + 0.85 * f, m))
+                return notes
+
+            def done_region(notes):
+                self.refine_edit.clear()
+                self.timeline.clear_selection()
+                self._show_result()
+
+            self._run("refine", work_region, done_region)
+            return
 
         def work(cancel, progress):
             progress(0.05, "Refining with Claude..." if proj.settings.use_ai else "Applying your changes...")
@@ -620,12 +677,23 @@ class MainWindow(QMainWindow):
         self.timeline.set_song(song)
         self.timeline.set_plan(plan)
         self.timeline.set_drops(proj.direction.drops if proj.direction.drops is not None else None)
+        self.timeline.set_regions([(r.start, r.end, r.note) for r in proj.direction.regions])
         d = proj.direction
         lines = []
+        from ..listening import describe
+
+        heard = describe(song.events)
+        if heard:
+            lines.append(f"<b>Heard:</b> <span style='color:{theme.MUTED}'>" + " · ".join(heard) + "</span>")
+        if plan.timeline:
+            lines.append("<b>Your timeline:</b> <span style='color:%s'>%s</span>" % (theme.TEXT, " · ".join(plan.timeline)))
         if d.summary:
             lines.append(f"<b>Director:</b> {d.summary}")
-        if d.notes:
-            lines.append("<span style='color:%s'>%s</span>" % (theme.MUTED, " · ".join(d.notes)))
+        # Timed instructions (⏱) are already listed as placed above; show the rest.
+        shown = [n for n in d.notes if not (plan.timeline and n.startswith("⏱"))]
+        shown = [n.lstrip("⏱ ") for n in shown]
+        if shown:
+            lines.append("<span style='color:%s'>%s</span>" % (theme.MUTED, " · ".join(shown)))
         for w in plan.warnings:
             lines.append(f"<span style='color:{theme.WARN}'>⚠ {w}</span>")
         cost = f" · AI cost so far: ${proj.ai.usage.cost:.2f}" if proj.ai else ""

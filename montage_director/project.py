@@ -106,6 +106,41 @@ class Project:
             self.settings.prompt = (self.settings.prompt + ". " + request).strip(". ")
         return self.direction
 
+    def refine_region(self, request: str, start: float, end: float) -> list[str]:
+        """Change only one selected part of the song. Returns what was understood."""
+        if self.direction is None:
+            raise ValueError("Make an edit first.")
+        start, end = max(0.0, min(start, end)), max(start, end)
+        if end - start < 0.5:
+            raise ValueError("Select a longer part of the song (drag across the timeline).")
+        span = f"{int(start // 60)}:{start % 60:04.1f} to {int(end // 60)}:{end % 60:04.1f}"
+        if self.settings.use_ai and self.ai is not None:
+            self.direction = self.ai.refine(
+                f"Only for the part of the song from {span} (song seconds {start:.2f} to {end:.2f}): "
+                f"{request.strip()}. Make that part its own section with exactly those bounds, and leave "
+                f"everything outside it as it is.")
+            if self.manual_drops is not None:
+                self.direction.drops = list(self.manual_drops)
+            return [f"{span}: sent to the AI Director"]
+        from .direction import region_direction
+
+        sd, notes = region_direction(request, start, end)
+        if sd is None:
+            raise ValueError("I didn't understand that change for the selected part. Try words like "
+                             "quicker cuts, slower cuts, hold one shot, cut on the hits, punches, fight scenes, "
+                             "flashes, shake, slow motion, or back to the flow.")
+        # A newer edit of the same stretch replaces the older one.
+        self.direction.regions = [r for r in self.direction.regions if r.end <= start or r.start >= end]
+        self.direction.regions.append(sd)
+        return notes
+
+    def remove_region(self, t: float) -> bool:
+        if self.direction is None:
+            return False
+        before = len(self.direction.regions)
+        self.direction.regions = [r for r in self.direction.regions if not (r.start <= t < r.end)]
+        return len(self.direction.regions) != before
+
     def output_settings(self) -> OutputSettings:
         s = self.settings
         aspect = s.aspect

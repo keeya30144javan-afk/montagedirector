@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 SR = 22050
 HOP = 512
-MUSIC_VERSION = 5
+MUSIC_VERSION = 6
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
 
 
@@ -48,6 +48,13 @@ class SongMap:
     hits: list[tuple[float, float]]          # (time, strength 0..1), strongest transients
     energy: list[float] = field(default_factory=list)  # 0..1 sampled at ENERGY_RATE
     energy_rate: float = 10.0
+    kicks: list[float] = field(default_factory=list)    # drum hits by instrument (seconds)
+    snares: list[float] = field(default_factory=list)
+    hats: list[float] = field(default_factory=list)
+    events: list[dict] = field(default_factory=list)    # what an editor cuts to (see listening.py)
+
+    def events_of(self, kind: str) -> list[dict]:
+        return [e for e in self.events if e["kind"] == kind]
 
     def energy_at(self, t0: float, t1: float | None = None) -> float:
         if not self.energy:
@@ -133,6 +140,12 @@ def analyze_song(path: str | Path, cancel=None, progress=None) -> SongMap:
     check_cancel(cancel)
     drops = _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa)
     sections = _align_sections(sections, drops, energy, energy_rate, duration)
+    check_cancel(cancel)
+    if progress:
+        progress(0.6, "Listening to the drums, bass and melody")
+    from .listening import listen
+
+    heard = listen(y, sr, beats, downbeats, tempo, duration, drops, librosa)
 
     if progress:
         progress(0.8, "Picking the biggest hits")
@@ -151,6 +164,7 @@ def analyze_song(path: str | Path, cancel=None, progress=None) -> SongMap:
         downbeats=[round(float(b), 3) for b in downbeats],
         sections=sections, drops=drops, hits=hits,
         energy=[round(float(e), 3) for e in energy], energy_rate=energy_rate,
+        kicks=heard["kicks"], snares=heard["snares"], hats=heard["hats"], events=heard["events"],
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(asdict(song)), encoding="utf-8")
