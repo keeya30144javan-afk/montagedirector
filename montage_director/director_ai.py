@@ -49,7 +49,7 @@ TILE_W, TILE_H, COLS, ROWS = 192, 108, 8, 5
 STRIP_W, STRIP_H, STRIP_COLS, STRIP_ROWS = 384, 72, 4, 10
 GRADES = ["none", "y2k", "sad", "cinematic", "vhs", "mono", "dream"]
 SHOT_KINDS = ["action", "character", "scenery", "dialogue", "text_or_ui", "other"]
-TAG_VERSION = 1
+TAG_VERSION = 2
 
 
 class AIDirectorError(Exception):
@@ -106,7 +106,7 @@ EDIT_SCHEMA = _obj({
 
 TAG_PROMPT = """You are logging footage for a video editor. Each labelled strip shows three frames from one shot: its start, its moment of most action, and its end.
 
-For every shot id, write a short description an editor can search: who is on screen (use the character's name when you recognise them, otherwise describe them), what is happening (for example: throwing punches, kicking, firing an energy blast, powering up, flying, falling, explosion, crying, talking, walking, close-up stare, landscape), and the mood. Then give its kind:
+For every shot id, write a short description an editor can search: who is on screen (use the character's name when you recognise them, otherwise describe them), what is happening (for example: throwing punches, kicking, firing an energy blast, powering up, flying, falling, explosion, crying, talking, walking, close-up stare, posing, landscape), the camera (still, pan, zoom in, shaking) when you can tell from the three frames, and the mood. Then give its kind:
 - action: fighting, attacks, chases, explosions, big movement
 - character: a character in focus without much action (stares, reactions, power-ups that are mostly posing)
 - scenery: places, sky, establishing shots
@@ -130,6 +130,8 @@ Follow the user's instructions literally, especially timed ones. Times the user 
 
 How your plan is used:
 - A planner places every cut exactly on the beat. You choose how many beats each cut lasts per section (cut_every_beats: 0.5 = double-time, 1 = every beat, 2, 4, or 8 = long held shots).
+- To hold ONE shot for a whole section (a still opening shot, a final pose), give that section exactly one shot and cut_every_beats 8; a shot shorter than the section is slowed down to fit.
+- Hits the user wants matched one by one (for example four hard drum hits) need cut_every_beats 1 for that bar, plus a flash or zoom moment on each hit.
 - In each section, list the shots to use in playback order. Each listed shot is used at most once. When a section needs more cuts than you listed, the planner fills them with unused shots that match the section's intensity, so list enough shots for fast sections (roughly one per cut).
 - Shots with the same scene number are the same moment (pieces of one take, or the same clip shown twice in a compilation). Using two of them reads as a repeat: pick one per scene unless the user wants repeats.
 - repeats: "never" if the user doesn't want any scene twice, "allowed" only if they ask for repeats or callbacks, otherwise "rarely".

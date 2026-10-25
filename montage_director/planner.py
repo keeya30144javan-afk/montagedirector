@@ -60,6 +60,13 @@ class _Planner:
     def song_t(self, frame: int) -> float:
         return self.S + frame / self.fps
 
+    def hold_at(self, t: float) -> SectionDirection | None:
+        """A section the director wants as ONE held shot (one shot listed, 8+ beats per cut)."""
+        for sd in self.d.sections:
+            if sd.start <= t < sd.end and len(sd.shots) == 1 and (sd.cut_every or 0) >= 8:
+                return sd
+        return None
+
     def label_at(self, t: float) -> str:
         t += 0.5 / self.fps
         label = self.song.section_at(t).label
@@ -166,6 +173,11 @@ class _Planner:
         if self.total - kept[-1] < min_len and len(kept) > 1:
             kept.pop()
         kept.append(self.total)
+        # Held shots ("a still shot until the bass drops"): no cuts inside them.
+        holds = [(self.frame_of(sd.start), self.frame_of(sd.end)) for sd in self.d.sections
+                 if len(sd.shots) == 1 and (sd.cut_every or 0) >= 8]
+        if holds:
+            kept = [p for p in kept if p in (0, self.total) or not any(a < p < b for a, b in holds)]
 
         # Very long cuts get split on beats (or evenly when there are none).
         final = [kept[0]]
@@ -173,6 +185,8 @@ class _Planner:
         for p in kept[1:]:
             label = self.label_at(self.song_t(final[-1]))
             max_len = int((6.0 if label in ("intro", "outro", "breakdown") else 4.0) * self.fps)
+            if self.hold_at(self.song_t(final[-1]) + 0.01):
+                max_len = int(30.0 * self.fps)  # one shot held on purpose, up to 30 s
             while p - final[-1] > max_len:
                 inside = [b for b in beat_frames if final[-1] + min_len <= b <= final[-1] + max_len and p - b >= min_len]
                 final.append(inside[-1] if inside else final[-1] + max_len)
@@ -289,6 +303,11 @@ class _Planner:
                 reverse = True
             need = dur * speed
             shot = self.pick_shot(t0, need, prev)
+            if shot.duration < need * 0.9 and dur >= 1.5:
+                # Shot shorter than the cut (a long hold): stretch it with slow motion
+                # instead of running past it into the next scene.
+                speed = max(0.25, round((shot.duration - 0.05) / dur, 3))
+                need = dur * speed
             energetic = self.target_energy(t0, t1) > 0.5
             start = self.in_point(shot, need, energetic)
             self.uses[shot.id] = self.uses.get(shot.id, 0) + 1

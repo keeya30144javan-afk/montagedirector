@@ -125,3 +125,16 @@ def test_drops_land_on_the_right_beat(edm_song):
     for found, true in zip(song.drops, [30.0, 90.0]):
         assert abs(found - true) < beat / 2, (found, true)
     assert song.section_at(30.5).label == "drop" and song.section_at(90.5).label == "drop"
+
+
+def test_one_shot_section_is_held_without_cuts(analysed):
+    from montage_director.direction import SectionDirection
+
+    song, footage = analysed
+    d = style_direction("hype")
+    shot = footage.usable_shots()[0].id
+    d.sections = [SectionDirection(start=0.0, end=9.0, cut_every=8.0, shots=[shot])]
+    plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=8))
+    first = plan.cuts[0]
+    assert first.shot == shot and first.f1 >= int(8.5 * 24), "the opening should be one held shot"
+    assert first.speed < 1.0, "a 4 s shot held for ~9 s is slowed down instead of running into the next scene"
