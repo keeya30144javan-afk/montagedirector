@@ -2,24 +2,37 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import logging
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .direction import DEFAULT_STYLE, Direction, Moment, asks_for_effects, read_prompt, style_direction
+from .direction import (DEFAULT_STYLE, Direction, Moment, SectionDirection, Style, asks_for_effects, read_prompt,
+                        style_direction)
 from .director_ai import DEFAULT_MODEL, AIDirector
 from .footage import Footage, analyze_footage
 from .music import SongMap, analyze_song
 from .paths import workspace_dir
-from .plan import EditPlan
+from .plan import EditPlan, Look
 from .planner import OutputSettings, make_plan
 from .render import EXPORT, EXPORT_BEST, PREVIEW, Quality, Renderer
 
 log = logging.getLogger(__name__)
 
 ASPECTS = {"16:9": (1920, 1080), "9:16": (1080, 1920), "1:1": (1080, 1080), "4:3": (1440, 1080)}
+PROJECT_VERSION = 1
+
+# Export presets: (label, quality, size override, fps override, size limit in MB)
+EXPORT_PRESETS = {
+    "high": ("High quality (your settings)", EXPORT, None, None, None),
+    "best": ("Best quality (slower)", EXPORT_BEST, None, None, None),
+    "youtube": ("YouTube 1080p60", EXPORT, (1920, 1080), 60, None),
+    "tiktok": ("TikTok / Shorts / Reels (vertical)", EXPORT, (1080, 1920), 30, None),
+    "discord": ("Discord (under 25 MB)", EXPORT, None, None, 24.0),
+}
 
 
 @dataclass
@@ -48,6 +61,10 @@ class Project:
     plan: EditPlan | None = None
     ai: AIDirector | None = None
     preview_path: Path | None = None
+    previous_preview: Path | None = None     # the preview before the last change (for compare)
+    history: list[dict] = field(default_factory=list)   # undo stack of edit states
+    future: list[dict] = field(default_factory=list)    # redo stack
+    path: Path | None = None                 # where this project is saved
     manual_drops: list[float] | None = None   # drops the user marked on the timeline
     taps: list[tuple[float, str]] = field(default_factory=list)  # Tap to Direct: (song seconds, kind)
     renderer: Renderer = field(default_factory=Renderer)
@@ -65,10 +82,12 @@ class Project:
         p = progress or (lambda f, m: None)
         self.song = analyze_song(self.song_path, cancel, lambda f, m: p(0.15 * f, m))
         self.footage = analyze_footage(self.footage_paths, cancel, lambda f, m: p(0.15 + 0.85 * f, m))
+        fresh = bool(self._analysed_for)  # material changed after an earlier analysis
         self._analysed_for = key
         self.ai = None  # new material: start a fresh AI conversation
-        self.manual_drops = None
-        self.taps = []
+        if fresh:
+            self.manual_drops = None
+            self.taps = []
 
     def song_range(self) -> tuple[float, float]:
         s = self.settings
@@ -192,17 +211,117 @@ class Project:
         out = workspace_dir() / "previews" / "preview.mp4"
         # A fresh name each time so video players never show a stale cached file.
         out = out.with_name(f"preview_{int(time.time() * 1000)}.mp4")
+        keep = {p for p in (self.preview_path,) if p}   # the current one becomes "before"
         for old in out.parent.glob("preview_*.mp4") if out.parent.is_dir() else []:
-            try:
-                old.unlink()
-            except OSError:
-                pass
-        self.preview_path = self.renderer.render(self.plan, out, PREVIEW, cancel, progress)
-        return self.preview_path
+            if old not in keep:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        new = self.renderer.render(self.plan, out, PREVIEW, cancel, progress)
+        self.previous_preview, self.preview_path = self.preview_path, new
+        return new
 
-    def export(self, out: str | Path, best: bool = False, cancel=None, progress=None) -> Path:
-        quality: Quality = EXPORT_BEST if best else EXPORT
-        return self.renderer.render(self.plan, out, quality, cancel, progress)
+    def export(self, out: str | Path, preset: str = "high", cancel=None, progress=None) -> Path:
+        """Render the full-quality video with one of EXPORT_PRESETS."""
+        if isinstance(preset, bool):  # older callers: best=True/False
+            preset = "best" if preset else "high"
+        _, quality, size, fps, limit_mb = EXPORT_PRESETS.get(preset, EXPORT_PRESETS["high"])
+        plan = self.plan
+        if size or fps:
+            # Different size or frame rate: plan again with the same seed (same cuts, same shots).
+            out_set = self.output_settings()
+            if size:
+                out_set.width, out_set.height = size
+            if fps:
+                out_set.fps = fps
+            plan = make_plan(self.song, self.footage, self.direction, out_set)
+        if limit_mb:
+            audio_kbps = 128
+            kbps = int(limit_mb * 8 * 1024 / max(plan.duration, 1.0) * 0.93) - audio_kbps
+            kbps = max(300, kbps)
+            scale = 1.0 if kbps >= 3500 else (2 / 3 if kbps >= 1500 else 0.5)  # smaller picture, cleaner result
+            quality = Quality("limited", scale, "medium", 23, f"{audio_kbps}k", f"{kbps}k")
+        return self.renderer.render(plan, out, quality, cancel, progress)
+
+    # ----- undo / redo ------------------------------------------------------- #
+    def snapshot(self) -> dict:
+        return {"direction": copy.deepcopy(self.direction), "manual_drops": copy.deepcopy(self.manual_drops),
+                "taps": list(self.taps), "seed": self.settings.seed, "prompt": self.settings.prompt}
+
+    def checkpoint(self) -> None:
+        """Remember the current edit before a change, so it can be undone."""
+        if self.direction is None:
+            return
+        self.history.append(self.snapshot())
+        del self.history[:-50]
+        self.future.clear()
+
+    def _restore(self, state: dict) -> None:
+        self.direction = copy.deepcopy(state["direction"])
+        self.manual_drops = copy.deepcopy(state["manual_drops"])
+        self.taps = list(state["taps"])
+        self.settings.seed = state["seed"]
+        self.settings.prompt = state["prompt"]
+
+    def undo(self) -> bool:
+        if not self.history:
+            return False
+        self.future.append(self.snapshot())
+        self._restore(self.history.pop())
+        return True
+
+    def redo(self) -> bool:
+        if not self.future:
+            return False
+        self.history.append(self.snapshot())
+        self._restore(self.future.pop())
+        return True
+
+    # ----- save / open ------------------------------------------------------- #
+    def to_dict(self) -> dict:
+        s = asdict(self.settings)
+        s.pop("api_key", None)  # never written into project files
+        return {
+            "app": "Montage Director", "version": PROJECT_VERSION,
+            "footage": list(self.footage_paths), "song": self.song_path, "settings": s,
+            "direction": _direction_to_dict(self.direction) if self.direction else None,
+            "manual_drops": self.manual_drops, "taps": [list(t) for t in self.taps],
+        }
+
+    def save(self, path: str | Path) -> Path:
+        path = Path(path)
+        if path.suffix.lower() != ".mdproj":
+            path = path.with_suffix(".mdproj")
+        tmp = path.with_suffix(".mdproj.tmp")
+        tmp.write_text(json.dumps(self.to_dict(), indent=1), encoding="utf-8")
+        tmp.replace(path)
+        self.path = path
+        return path
+
+    @classmethod
+    def load(cls, path: str | Path, api_key: str = "") -> "Project":
+        path = Path(path)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"Couldn't open {path.name}: it isn't a Montage Director project.") from exc
+        if data.get("app") != "Montage Director":
+            raise ValueError(f"{path.name} isn't a Montage Director project.")
+        settings = Settings(**{k: v for k, v in data.get("settings", {}).items() if k in Settings.__dataclass_fields__})
+        settings.api_key = api_key
+        proj = cls(footage_paths=data.get("footage", []), song_path=data.get("song", ""), settings=settings)
+        missing = [p for p in proj.footage_paths + [proj.song_path] if p and not Path(p).exists()]
+        if missing:
+            names = ", ".join(Path(p).name for p in missing[:3])
+            raise ValueError(f"Some files in this project have moved or been deleted: {names}. "
+                             "Put them back, or start a new project with them.")
+        if data.get("direction"):
+            proj.direction = _direction_from_dict(data["direction"])
+        proj.manual_drops = data.get("manual_drops")
+        proj.taps = [tuple(t) for t in data.get("taps", [])]
+        proj.path = path
+        return proj
 
     def default_export_path(self) -> Path:
         name = Path(self.song_path).stem if self.song_path else "edit"
@@ -218,3 +337,24 @@ class Project:
 
     def stop(self) -> None:
         self.renderer.cancel()
+
+
+
+def _direction_to_dict(d: Direction) -> dict:
+    return asdict(d)
+
+
+def _direction_from_dict(data: dict) -> Direction:
+    data = copy.deepcopy(data)
+    style = data.pop("style")
+    style["look"] = Look(**style.get("look", {}))
+    sd_fields = SectionDirection.__dataclass_fields__
+    mo_fields = Moment.__dataclass_fields__
+    return Direction(
+        style=Style(**{k: v for k, v in style.items() if k in Style.__dataclass_fields__}),
+        look=Look(**data.pop("look", {})),
+        sections=[SectionDirection(**{k: v for k, v in sd.items() if k in sd_fields}) for sd in data.pop("sections", [])],
+        regions=[SectionDirection(**{k: v for k, v in sd.items() if k in sd_fields}) for sd in data.pop("regions", [])],
+        moments=[Moment(**{k: v for k, v in m.items() if k in mo_fields}) for m in data.pop("moments", [])],
+        **{k: v for k, v in data.items() if k in Direction.__dataclass_fields__},
+    )

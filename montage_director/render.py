@@ -37,6 +37,7 @@ class Quality:
     preset: str
     crf: int
     audio_bitrate: str
+    video_bitrate: str | None = None   # set for size-limited exports (e.g. "2400k")
 
 
 PREVIEW = Quality("preview", 1 / 3, "ultrafast", 30, "160k")
@@ -85,6 +86,12 @@ def pick_encoder() -> str:
 
 def encoder_args(enc: str, quality: "Quality", fps: int) -> list[str]:
     g = ["-g", str(fps * 2), "-pix_fmt", "yuv420p"]
+    if quality.video_bitrate:  # size-limited: steady bitrate instead of constant quality
+        kbps = int(quality.video_bitrate.rstrip("k"))
+        rate = ["-b:v", f"{kbps}k", "-maxrate", f"{int(kbps * 1.15)}k", "-bufsize", f"{kbps * 2}k"]
+        if enc == "libx264":
+            return ["-c:v", "libx264", "-preset", quality.preset, *rate, "-threads", "2"] + g
+        return ["-c:v", enc, *rate] + g
     if enc == "h264_nvenc":
         return ["-c:v", enc, "-preset", "p2" if quality.name == "preview" else "p5", "-rc", "vbr",
                 "-cq", str(quality.crf + 1), "-b:v", "0"] + g

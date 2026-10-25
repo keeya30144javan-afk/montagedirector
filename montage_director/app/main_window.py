@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                                QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider,
@@ -21,7 +21,7 @@ from ..director_ai import MODELS
 from ..footage import VIDEO_EXTENSIONS
 from ..music import AUDIO_EXTENSIONS
 from ..paths import APP_NAME, data_dir, workspace_dir
-from ..project import Project, Settings
+from ..project import EXPORT_PRESETS, Project, Settings
 from . import store, theme
 from .widgets import DropList, Segmented, StyleGrid, Timeline
 from .worker import start_job
@@ -122,6 +122,8 @@ class TapFilter(QObject):
 
     def eventFilter(self, obj, event):
         if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+            if event.modifiers() & (Qt.ControlModifier | Qt.MetaModifier):
+                return True  # no shortcuts (like Ctrl+Z) while tapping
             key = event.key()
             if key in TAP_KEYS or key in (Qt.Key_Backspace, Qt.Key_Escape):
                 self.window.on_tap_key(key)
@@ -152,12 +154,36 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.addWidget(self._build_sidebar())
         layout.addWidget(self._build_main(), 1)
+        self._build_menus()
         self._restore()
         self._update_director_info()
         self._set_busy(False)
         QTimer.singleShot(3000, self.check_for_updates)
 
     # ----------------------------------------------------------------- layout
+    def _build_menus(self):
+        def action(menu, text, slot, keys=()):
+            a = QAction(text, self)
+            a.setShortcuts([QKeySequence(k) for k in keys])
+            a.triggered.connect(slot)
+            menu.addAction(a)
+            return a
+
+        file = self.menuBar().addMenu("&File")
+        action(file, "New project", self.new_project, ["Ctrl+N"])
+        action(file, "Open project...", self.open_project, [QKeySequence.Open])
+        file.addSeparator()
+        action(file, "Save project", self.save_project, [QKeySequence.Save])
+        action(file, "Save project as...", self.save_project_as, ["Ctrl+Shift+S"])
+        file.addSeparator()
+        action(file, "Export video...", self.export, ["Ctrl+E"])
+        edit = self.menuBar().addMenu("&Edit")
+        self.undo_action = action(edit, "Undo change", self.undo, [QKeySequence.Undo])
+        self.redo_action = action(edit, "Redo change", self.redo, ["Ctrl+Y", "Ctrl+Shift+Z"])
+        edit.addSeparator()
+        action(edit, "Compare before / after", lambda: self.compare_btn.isEnabled() and self.compare_btn.toggle(),
+               ["C"])
+
     def _build_sidebar(self) -> QWidget:
         side = QWidget()
         side.setObjectName("Sidebar")
@@ -317,6 +343,12 @@ class MainWindow(QMainWindow):
                                 "D = drop, Backspace = undo. Your taps snap to the nearest drum hit.")
         self.tap_btn.clicked.connect(self.toggle_tapping)
         controls.addWidget(self.tap_btn)
+        self.compare_btn = QPushButton("Before / After")
+        self.compare_btn.setCheckable(True)
+        self.compare_btn.setToolTip("Flip between this preview and the one before your last change, "
+                                    "at the same moment in the song (shortcut: C)")
+        self.compare_btn.toggled.connect(self.toggle_compare)
+        controls.addWidget(self.compare_btn)
         self.open_btn = QPushButton("Open in player")
         self.open_btn.clicked.connect(self.open_preview)
         controls.addWidget(self.open_btn)
@@ -358,6 +390,16 @@ class MainWindow(QMainWindow):
         self.variation_btn.setToolTip("Same idea, different shot choices")
         self.variation_btn.clicked.connect(self.variation)
         refine.addWidget(self.variation_btn)
+        self.undo_btn = QPushButton("↶")
+        self.undo_btn.setToolTip("Undo the last change (Ctrl+Z)")
+        self.undo_btn.setFixedWidth(40)
+        self.undo_btn.clicked.connect(self.undo)
+        refine.addWidget(self.undo_btn)
+        self.redo_btn = QPushButton("↷")
+        self.redo_btn.setToolTip("Redo (Ctrl+Y)")
+        self.redo_btn.setFixedWidth(40)
+        self.redo_btn.clicked.connect(self.redo)
+        refine.addWidget(self.redo_btn)
         v.addLayout(refine)
 
         bar = QHBoxLayout()
@@ -373,8 +415,10 @@ class MainWindow(QMainWindow):
         self.stop_btn.clicked.connect(self.stop)
         bar.addWidget(self.stop_btn)
         self.quality = QComboBox()
-        self.quality.addItem("High quality", False)
-        self.quality.addItem("Best (slower)", True)
+        for key, (label, *_rest) in EXPORT_PRESETS.items():
+            self.quality.addItem(label, key)
+        self.quality.setToolTip("YouTube and TikTok presets set the size and frame rate for you; Discord keeps "
+                                "the file under 25 MB")
         bar.addWidget(self.quality)
         self.export_btn = QPushButton("Export video")
         self.export_btn.setObjectName("Hot")
@@ -403,6 +447,8 @@ class MainWindow(QMainWindow):
         self.player.positionChanged.connect(self._on_position)
         self.player.playbackStateChanged.connect(
             lambda s: self.play_btn.setText("Pause" if s == QMediaPlayer.PlayingState else "Play"))
+        self.player.mediaStatusChanged.connect(self._on_media_status)
+        self._seek_after_load = None
 
     # ------------------------------------------------------------- persistence
     def _restore(self):
@@ -419,13 +465,17 @@ class MainWindow(QMainWindow):
         if s.get("fps") is None:
             self.fps.setCurrentIndex(1)
         self.model = s.get("model", next(iter(MODELS)))
+        i = self.quality.findData(s.get("export_preset"))
+        if i >= 0:
+            self.quality.setCurrentIndex(i)
 
     def _persist(self):
         store.save({**store.load(),
                     "footage": self.footage_list.paths(), "song": (self.song_list.paths() or [""])[0],
                     "style": self.styles.selected(), "prompt": self.prompt.toPlainText(),
                     "use_ai": self.director.index() == 1, "aspect": self.shape.currentData(),
-                    "fit": self.fit.currentData(), "fps": self.fps.currentData(), "model": self.model})
+                    "fit": self.fit.currentData(), "fps": self.fps.currentData(), "model": self.model,
+                    "export_preset": self.quality.currentData()})
 
     def closeEvent(self, e):
         if self.job is not None:
@@ -503,6 +553,14 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(busy)
         for w in (self.refine_btn, self.variation_btn, self.export_btn, self.refine_edit):
             w.setEnabled(has_plan)
+        if hasattr(self, "undo_btn"):
+            can_undo, can_redo = has_plan and bool(self.project.history), has_plan and bool(self.project.future)
+            self.undo_btn.setEnabled(can_undo)
+            self.undo_action.setEnabled(can_undo)
+            self.redo_btn.setEnabled(can_redo)
+            self.redo_action.setEnabled(can_redo)
+            prev = self.project.previous_preview
+            self.compare_btn.setEnabled(not busy and bool(prev) and Path(prev).exists())
         self.make_btn.setText({"make": "Making your edit...", "refine": "Refining...",
                                "export": "Exporting..."}.get(self.busy_kind, "Make Edit") if busy else "Make Edit")
 
@@ -565,6 +623,11 @@ class MainWindow(QMainWindow):
             return
         self._persist()
         proj = self.project
+        if (footage, song) != (proj.footage_paths, proj.song_path):
+            proj.history.clear()  # other footage or song: old edits don't apply
+            proj.future.clear()
+        else:
+            proj.checkpoint()
         proj.footage_paths, proj.song_path, proj.settings = footage, song, settings
         if self.player:
             self.player.stop()
@@ -629,6 +692,8 @@ class MainWindow(QMainWindow):
         if self.project.taps == self._taps_before:
             self.status.setText("No new taps.")
             return
+        self.project.checkpoint()
+        self.project.history[-1]["taps"] = list(self._taps_before)  # undo goes back to before tapping
         self.project.apply_taps()
         self._replan(f"Rebuilding the edit around your {len(self.project.taps)} taps...")
 
@@ -653,12 +718,17 @@ class MainWindow(QMainWindow):
     def clear_taps(self):
         if self.job is not None or not self.project.taps:
             return
+        self.project.checkpoint()
         self.project.clear_taps()
         self.timeline.set_taps([])
         self._replan("Removing your taps...")
 
     def region_removed(self, t: float):
-        if self.job is not None or not self.project.remove_region(t):
+        if self.job is not None:
+            return
+        self.project.checkpoint()
+        if not self.project.remove_region(t):
+            self.project.history.pop()
             return
         self._replan("Undoing that section edit...")
 
@@ -678,6 +748,7 @@ class MainWindow(QMainWindow):
         if not text or self.project.plan is None:
             return
         proj = self.project
+        proj.checkpoint()
         region = getattr(self, "region", None)
         if region:
             a, b = region
@@ -710,6 +781,7 @@ class MainWindow(QMainWindow):
         if self.project.plan is None:
             return
         proj = self.project
+        proj.checkpoint()
 
         def work(cancel, progress):
             proj.reroll()
@@ -724,6 +796,7 @@ class MainWindow(QMainWindow):
         if proj.plan is None or self.job is not None:
             return
         manual = self.timeline.drops  # None when they asked for the detected drops again
+        proj.checkpoint()
         proj.manual_drops = manual
         proj.direction.drops = manual if manual is not None else None
 
@@ -744,10 +817,11 @@ class MainWindow(QMainWindow):
             return
         if not path.lower().endswith(".mp4"):
             path += ".mp4"
-        best = bool(self.quality.currentData())
+        preset = self.quality.currentData()
+        self._persist()
 
         def work(cancel, progress):
-            return self.project.export(path, best, cancel, progress)
+            return self.project.export(path, preset, cancel, progress)
 
         def done(out):
             self.status.setText(f"Exported {Path(out).name}")
@@ -795,8 +869,157 @@ class MainWindow(QMainWindow):
                      f"{_mmss(plan.duration)}{cost}</span>")
         self.summary.setText("<br>".join(lines))
         self.summary.show()
-        self.status.setText("Preview ready.")
+        self.status.setText("Preview ready." + ("  Press Before / After (C) to compare with the last version."
+                                                if proj.previous_preview else ""))
+        self.compare_btn.blockSignals(True)
+        self.compare_btn.setChecked(False)
+        self.compare_btn.setText("Before / After")
+        self.compare_btn.blockSignals(False)
         self.load_preview(proj.preview_path)
+        name = proj.path.stem if proj.path else ""
+        self.setWindowTitle(f"{name} · {APP_NAME}" if name else APP_NAME)
+
+    # ----------------------------------------------------------- undo / redo
+    def undo(self):
+        if self.job is not None or self.tapping or not self.project.undo():
+            return
+        self.timeline.clear_selection()
+        self._replan("Undoing your last change...")
+
+    def redo(self):
+        if self.job is not None or self.tapping or not self.project.redo():
+            return
+        self.timeline.clear_selection()
+        self._replan("Redoing...")
+
+    # --------------------------------------------------------------- compare
+    def toggle_compare(self, before: bool):
+        proj = self.project
+        path = proj.previous_preview if before else proj.preview_path
+        if not path or not Path(path).exists():
+            self.compare_btn.setChecked(False)
+            return
+        self.compare_btn.setText("Showing: Before" if before else "Before / After")
+        self.status.setText("Showing the version BEFORE your last change. Press C to flip back." if before
+                            else "Showing your latest version.")
+        if self.player is None:
+            open_in_system(Path(path))
+            return
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        self._seek_after_load = (self.player.position(), self.player.playbackState() == QMediaPlayer.PlayingState)
+        self.player.setSource(QUrl.fromLocalFile(str(path)))
+
+    def _on_media_status(self, status):
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        if self._seek_after_load and status in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia):
+            pos, playing = self._seek_after_load
+            self._seek_after_load = None
+            self.player.setPosition(pos)
+            if playing:
+                self.player.play()
+
+    # -------------------------------------------------------------- projects
+    def _projects_dir(self) -> Path:
+        folder = workspace_dir() / "Projects"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def new_project(self):
+        if self.job is not None:
+            return
+        if self.player:
+            self.player.stop()
+            self.player.setSource(QUrl())
+        self.project = Project()
+        self.footage_list.clear()
+        self.song_list.clear()
+        self.prompt.clear()
+        self.start_edit.clear()
+        self.end_edit.clear()
+        self.summary.hide()
+        self.timeline.set_plan(None)
+        self.footage_info.setText("")
+        self.song_info.setText("")
+        self.video_stack.setCurrentWidget(self.placeholder)
+        self.setWindowTitle(APP_NAME)
+        self.status.setText("New project.")
+        self._set_busy(False)
+
+    def save_project(self):
+        if self.project.path:
+            self._write_project(self.project.path)
+        else:
+            self.save_project_as()
+
+    def save_project_as(self):
+        proj = self.project
+        default = proj.path or self._projects_dir() / ((Path(proj.song_path).stem if proj.song_path else "My edit")
+                                                        + ".mdproj")
+        path, _ = QFileDialog.getSaveFileName(self, "Save project", str(default), "Montage Director project (*.mdproj)")
+        if path:
+            self._write_project(Path(path))
+
+    def _write_project(self, path: Path):
+        proj = self.project
+        if proj.direction is None:  # nothing made yet: save what's on screen
+            try:
+                proj.settings = self._collect()
+            except ValueError as exc:
+                QMessageBox.warning(self, APP_NAME, str(exc))
+                return
+            proj.footage_paths, proj.song_path = self.footage_list.paths(), (self.song_list.paths() or [""])[0]
+        try:
+            saved = proj.save(path)
+        except OSError as exc:
+            QMessageBox.warning(self, APP_NAME, f"Couldn't save the project: {exc}")
+            return
+        self.setWindowTitle(f"{saved.stem} · {APP_NAME}")
+        self.status.setText(f"Saved {saved.name}")
+
+    def open_project(self):
+        if self.job is not None:
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Open project", str(self._projects_dir()),
+                                              "Montage Director project (*.mdproj)")
+        if path:
+            self.load_project(Path(path))
+
+    def load_project(self, path: Path):
+        try:
+            proj = Project.load(path, api_key=store.get_api_key())
+        except ValueError as exc:
+            QMessageBox.warning(self, APP_NAME, str(exc))
+            return
+        self.new_project()
+        self.project = proj
+        s = proj.settings
+        self.footage_list.add_paths(proj.footage_paths)
+        if proj.song_path:
+            self.song_list.add_paths([proj.song_path])
+        self.prompt.setPlainText(s.prompt)
+        self.styles.select(s.style)
+        self.director.set_index(1 if s.use_ai else 0)
+        for combo, value in ((self.shape, s.aspect), (self.fit, s.fit), (self.fps, s.fps)):
+            i = combo.findData(value)
+            if i >= 0:
+                combo.setCurrentIndex(i)
+        self.start_edit.setText(_mmss(s.song_start) if s.song_start else "")
+        self.end_edit.setText(_mmss(s.song_end) if s.song_end else "")
+        self.setWindowTitle(f"{path.stem} · {APP_NAME}")
+        if proj.direction is None:
+            self.status.setText(f"Opened {path.name}. Press Make Edit when you're ready.")
+            return
+
+        def work(cancel, progress):
+            proj.analyse(cancel, lambda f, m: progress(0.4 * f, m))
+            progress(0.42, "Planning cuts on the beat...")
+            proj.make_plan()
+            proj.render_preview(cancel, lambda f, m: progress(0.42 + 0.58 * f, m))
+            return True
+
+        self._run("make", work, lambda _: self._show_result())
 
     # ---------------------------------------------------------------- updates
     def check_for_updates(self):

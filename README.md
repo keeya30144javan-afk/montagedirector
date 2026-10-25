@@ -27,7 +27,10 @@ The app checks for updates when it starts and offers to download new versions. Y
    - **Tap to Direct:** press it and tap along with the music: Space = cut, F = flash, Z = zoom, X = shake, D = drop, Backspace = undo. Taps snap to the nearest drum hit. Press **Done tapping** and the edit is rebuilt around your taps.
    - **Fix a drop:** right-click the timeline where it really hits and choose **Mark the drop here**.
    - **New variation** keeps the plan but picks different shots.
-8. **Export video** saves the full-quality MP4 to `Documents/Montage Director/Exports`.
+   - **Undo / Redo** (↶ ↷, or Ctrl+Z / Ctrl+Y) steps back through every change you made.
+   - **Before / After** (or press C) flips the player between this version and the one before your last change, at the same moment in the song.
+8. **Export video** saves the full-quality MP4 to `Documents/Montage Director/Exports`. Pick a preset next to the button: High quality, Best quality, YouTube 1080p60, TikTok / Shorts / Reels (vertical, follows the action) or Discord (kept under 25 MB).
+9. **File → Save project** (Ctrl+S) keeps everything (footage, song, idea, section edits, taps, drop marks) in a `.mdproj` file in `Documents/Montage Director/Projects`. **File → Open project** brings it back exactly as it was. Your API key is never saved in project files.
 
 ### Writing your idea as a timeline
 
@@ -68,7 +71,7 @@ Tests: `pip install pytest` then `pytest`.
 ## Releasing a new version
 
 1. Update `__version__` in `montage_director/__init__.py`.
-2. Push a tag: `git tag v0.2.0 && git push origin v0.2.0`.
+2. Push a tag: `git tag v0.3.0 && git push origin v0.3.0`.
 3. GitHub Actions builds the Windows installer and the Mac disk image and publishes them on the Releases page. Installed copies see the update the next time they start.
 
 To build test installers without publishing, open **Actions → Build installers → Run workflow**.

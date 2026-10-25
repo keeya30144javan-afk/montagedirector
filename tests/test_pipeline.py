@@ -267,3 +267,62 @@ def test_bass_drops_falls_back_to_the_beat_coming_in(band_song, media):
     assert not plan.warnings or "bass drop" not in plan.warnings[0]
     intro_end = song.events_of("intro")[0]["end"]
     assert any(abs(c.f0 / 24 - intro_end) < 0.1 for c in plan.cuts), "the action starts when the beat comes in"
+
+
+def test_project_saves_and_reopens_to_the_same_edit(media, tmp_path):
+    from montage_director.project import Project, Settings
+
+    proj = Project(footage_paths=[str(media)], song_path=str(media / "song.mp3"),
+                   settings=Settings(style="hype", prompt="flash at 0:12", seed=21, api_key="sk-secret"))
+    proj.analyse()
+    proj.direct()
+    proj.refine_region("hold one shot", 10.0, 15.0)
+    proj.taps = [(4.0, "cut"), (5.0, "flash")]
+    proj.apply_taps()
+    before = proj.make_plan()
+    saved = proj.save(tmp_path / "my edit")
+    assert saved.suffix == ".mdproj" and "sk-secret" not in saved.read_text()
+
+    again = Project.load(saved)
+    again.analyse()
+    after = again.make_plan()
+    assert [(c.f0, c.f1, c.shot) for c in after.cuts] == [(c.f0, c.f1, c.shot) for c in before.cuts]
+    assert again.taps == proj.taps and len(again.direction.regions) == 1
+
+
+def test_undo_and_redo_restore_the_edit(analysed):
+    from montage_director.project import Project, Settings
+
+    song, footage = analysed
+    proj = Project(settings=Settings(style="hype", seed=5))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    first = [(c.f0, c.shot) for c in proj.make_plan().cuts]
+    proj.checkpoint()
+    proj.refine_region("hold one shot", 8.0, 14.0)
+    proj.checkpoint()
+    proj.reroll()
+    changed = [(c.f0, c.shot) for c in proj.make_plan().cuts]
+    assert proj.undo() and proj.undo() and not proj.undo()
+    assert [(c.f0, c.shot) for c in proj.make_plan().cuts] == first
+    assert proj.redo() and proj.redo() and not proj.redo()
+    assert [(c.f0, c.shot) for c in proj.make_plan().cuts] == changed
+
+
+def test_export_presets_set_size_and_file_limit(media, tmp_path, monkeypatch):
+    from montage_director import project as project_mod
+    from montage_director.project import Project, Settings
+
+    proj = Project(footage_paths=[str(media)], song_path=str(media / "song.mp3"),
+                   settings=Settings(style="clean", seed=3, song_end=6.0))
+    proj.analyse()
+    proj.direct()
+    proj.make_plan()
+    out = proj.export(tmp_path / "tiktok.mp4", "tiktok")
+    info = probe(out)
+    assert (info.width, info.height) == (1080, 1920)
+
+    monkeypatch.setitem(project_mod.EXPORT_PRESETS, "discord",
+                        ("small", project_mod.EXPORT, None, None, 0.5))  # 0.5 MB for a 6 s clip
+    out = proj.export(tmp_path / "small.mp4", "discord")
+    assert out.stat().st_size < 0.5 * 1024 * 1024
