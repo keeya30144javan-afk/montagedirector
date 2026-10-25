@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .direction import DEFAULT_STYLE, Direction, asks_for_effects, read_prompt, style_direction
+from .direction import DEFAULT_STYLE, Direction, Moment, asks_for_effects, read_prompt, style_direction
 from .director_ai import DEFAULT_MODEL, AIDirector
 from .footage import Footage, analyze_footage
 from .music import SongMap, analyze_song
@@ -49,6 +49,7 @@ class Project:
     ai: AIDirector | None = None
     preview_path: Path | None = None
     manual_drops: list[float] | None = None   # drops the user marked on the timeline
+    taps: list[tuple[float, str]] = field(default_factory=list)  # Tap to Direct: (song seconds, kind)
     renderer: Renderer = field(default_factory=Renderer)
     _analysed_for: tuple = ()
 
@@ -67,6 +68,7 @@ class Project:
         self._analysed_for = key
         self.ai = None  # new material: start a fresh AI conversation
         self.manual_drops = None
+        self.taps = []
 
     def song_range(self) -> tuple[float, float]:
         s = self.settings
@@ -91,6 +93,7 @@ class Project:
                 self.direction.style.pure = False  # they asked for effects on top of clean cuts
         if self.manual_drops is not None:  # the user's own drop marks win
             self.direction.drops = list(self.manual_drops)
+        self.apply_taps()
         return self.direction
 
     def refine(self, request: str) -> Direction:
@@ -104,6 +107,7 @@ class Project:
             # Free mode: the refinement is read as extra keywords on top of the current edit.
             self.direction = read_prompt(request, self.direction)
             self.settings.prompt = (self.settings.prompt + ". " + request).strip(". ")
+        self.apply_taps()
         return self.direction
 
     def refine_region(self, request: str, start: float, end: float) -> list[str]:
@@ -133,6 +137,30 @@ class Project:
         self.direction.regions = [r for r in self.direction.regions if r.end <= start or r.start >= end]
         self.direction.regions.append(sd)
         return notes
+
+    TAP_KINDS = {"cut", "flash", "zoom", "shake", "drop"}
+
+    def apply_taps(self) -> None:
+        """Put the user's taps into the current direction (replacing earlier taps)."""
+        if self.direction is None:
+            return
+        d = self.direction
+        d.tap_cuts = [t for t, k in self.taps if k == "cut"]
+        d.moments = [m for m in d.moments if not m.tapped]
+        for t, k in self.taps:
+            if k in ("flash", "zoom", "shake"):
+                d.moments.append(Moment(time=t, action=k, duration=0.4 if k == "shake" else 0.0, tapped=True))
+        tapped_drops = [t for t, k in self.taps if k == "drop"]
+        if tapped_drops:
+            base = self.manual_drops if self.manual_drops is not None else list(self.song.drops)
+            # a tapped drop replaces a detected one nearby
+            kept = [x for x in base if all(abs(x - t) > 4.0 for t in tapped_drops)]
+            self.manual_drops = sorted(kept + tapped_drops)
+            d.drops = list(self.manual_drops)
+
+    def clear_taps(self) -> None:
+        self.taps = []
+        self.apply_taps()
 
     def remove_region(self, t: float) -> bool:
         if self.direction is None:

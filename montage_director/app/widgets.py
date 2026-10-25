@@ -160,6 +160,7 @@ class Timeline(QWidget):
     drops_changed = Signal(list)  # song seconds, after the user adds or removes a drop
     region_selected = Signal(float, float)  # song seconds; (0, 0) when the selection is cleared
     region_removed = Signal(float)          # song second inside a section edit to undo
+    taps_cleared = Signal()
 
     def __init__(self):
         super().__init__()
@@ -172,6 +173,7 @@ class Timeline(QWidget):
         self.position = 0.0
         self.drops: list[float] | None = None  # None = the song analysis' drops
         self.selection: tuple[float, float] | None = None   # song seconds
+        self.taps: list[tuple[float, str]] = []              # Tap to Direct marks
         self.regions: list[tuple[float, float, str]] = []    # section edits: (start, end, label)
         self._press_x: float | None = None
         self._dragging = False
@@ -209,6 +211,7 @@ class Timeline(QWidget):
         in_region = next((r for r in self.regions if r[0] <= t_raw < r[1]), None)
         undo = menu.addAction(f"Undo the section edit here ({in_region[2][:30]})") if in_region else None
         clear = menu.addAction("Clear the selection") if self.selection else None
+        clear_taps = menu.addAction(f"Clear my taps ({len(self.taps)})") if self.taps else None
         chosen = menu.exec(e.globalPos())
         if chosen is None:
             return
@@ -217,6 +220,9 @@ class Timeline(QWidget):
             return
         if chosen is clear:
             self.clear_selection()
+            return
+        if chosen is clear_taps:
+            self.taps_cleared.emit()
             return
         if chosen is add:
             drops = sorted(set(drops + [round(t, 3)]))
@@ -249,6 +255,10 @@ class Timeline(QWidget):
     def _x(self, song_t: float, w: float) -> float:
         span = max(self.end - self.start, 1e-6)
         return (song_t - self.start) / span * w
+
+    def set_taps(self, taps: list[tuple[float, str]]) -> None:
+        self.taps = list(taps)
+        self.update()
 
     def set_regions(self, regions: list[tuple[float, float, str]]) -> None:
         self.regions = regions
@@ -395,6 +405,13 @@ class Timeline(QWidget):
             p.setPen(QPen(QColor(theme.ACCENT_HI), 2))
             p.setBrush(QColor(139, 108, 255, 70))
             p.drawRect(QRectF(x0, top - 1, max(2, x1 - x0), wave_h + 2))
+        # Tap to Direct marks: cyan for cuts, white / amber / pink for effects and drops.
+        tap_colors = {"cut": "#38d9f5", "flash": "#ffffff", "zoom": theme.WARN, "shake": theme.WARN, "drop": theme.HOT}
+        for t, kind in self.taps:
+            if self.start <= t <= self.end:
+                x = self._x(t, w)
+                p.setPen(QPen(QColor(tap_colors.get(kind, "#38d9f5")), 2))
+                p.drawLine(QPointF(x, top + wave_h - 22), QPointF(x, top + wave_h))
         p.setBrush(Qt.NoBrush)
         p.setFont(small)
         # Playhead

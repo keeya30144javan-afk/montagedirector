@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                                QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -107,6 +107,26 @@ class SettingsDialog(QDialog):
         where = store.set_api_key(self.key.text())
         log.info("API key saved to %s", where)
         super().accept()
+
+
+TAP_KEYS = {Qt.Key_Space: "cut", Qt.Key_F: "flash", Qt.Key_Z: "zoom", Qt.Key_X: "shake", Qt.Key_D: "drop"}
+TAP_HELP = "Tapping: Space = cut · F = flash · Z = zoom · X = shake · D = drop · Backspace = undo"
+
+
+class TapFilter(QObject):
+    """While tapping, every key press goes to Tap to Direct (so Space doesn't press a button)."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window = window
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.KeyPress and not event.isAutoRepeat():
+            key = event.key()
+            if key in TAP_KEYS or key in (Qt.Key_Backspace, Qt.Key_Escape):
+                self.window.on_tap_key(key)
+                return True
+        return False
 
 
 class MainWindow(QMainWindow):
@@ -292,6 +312,11 @@ class MainWindow(QMainWindow):
         self.time_label = QLabel("0:00 / 0:00")
         self.time_label.setObjectName("Muted")
         controls.addWidget(self.time_label)
+        self.tap_btn = QPushButton("Tap to Direct")
+        self.tap_btn.setToolTip("Play the edit and tap along: Space = cut, F = flash, Z = zoom, X = shake, "
+                                "D = drop, Backspace = undo. Your taps snap to the nearest drum hit.")
+        self.tap_btn.clicked.connect(self.toggle_tapping)
+        controls.addWidget(self.tap_btn)
         self.open_btn = QPushButton("Open in player")
         self.open_btn.clicked.connect(self.open_preview)
         controls.addWidget(self.open_btn)
@@ -302,6 +327,9 @@ class MainWindow(QMainWindow):
         self.timeline.drops_changed.connect(self.drops_changed)
         self.timeline.region_selected.connect(self.region_selected)
         self.timeline.region_removed.connect(self.region_removed)
+        self.timeline.taps_cleared.connect(self.clear_taps)
+        self.tapping = False
+        self.tap_filter = TapFilter(self)
         v.addWidget(self.timeline)
 
         self.summary = QLabel("")
@@ -469,6 +497,8 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy: bool):
         has_plan = self.project.plan is not None and not busy
+        if hasattr(self, "tap_btn"):
+            self.tap_btn.setEnabled(has_plan)
         self.make_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(busy)
         for w in (self.refine_btn, self.variation_btn, self.export_btn, self.refine_edit):
@@ -563,6 +593,69 @@ class MainWindow(QMainWindow):
         self.refine_edit.setPlaceholderText(f"What should happen from {_mmss(a)} to {_mmss(b)}? e.g. "
                                             "\"quicker cuts with punches\", \"hold one shot\", \"cut on the hits\"")
         self.refine_edit.setFocus()
+
+    # ------------------------------------------------------------ tap to direct
+    def toggle_tapping(self):
+        if self.tapping:
+            self.stop_tapping(apply=True)
+            return
+        if self.project.plan is None or self.job is not None:
+            return
+        if self.player is None:
+            QMessageBox.information(self, APP_NAME, "Tap to Direct needs the built-in player, which isn't "
+                                    "available on this computer.")
+            return
+        self.tapping = True
+        self._taps_before = list(self.project.taps)
+        QApplication.instance().installEventFilter(self.tap_filter)
+        self.tap_btn.setText("Done tapping")
+        self.tap_btn.setStyleSheet(f"background: {theme.HOT}; color: white; border: none; font-weight: 700;")
+        self.status.setText(TAP_HELP)
+        self.setFocus()
+        self.player.play()
+
+    def stop_tapping(self, apply: bool):
+        self.tapping = False
+        QApplication.instance().removeEventFilter(self.tap_filter)
+        self.tap_btn.setText("Tap to Direct")
+        self.tap_btn.setStyleSheet("")
+        if self.player:
+            self.player.pause()
+        if not apply:
+            self.project.taps = self._taps_before
+            self.timeline.set_taps(self.project.taps)
+            self.status.setText("Tapping cancelled.")
+            return
+        if self.project.taps == self._taps_before:
+            self.status.setText("No new taps.")
+            return
+        self.project.apply_taps()
+        self._replan(f"Rebuilding the edit around your {len(self.project.taps)} taps...")
+
+    def on_tap_key(self, key):
+        if key == Qt.Key_Escape:
+            self.stop_tapping(apply=False)
+            return
+        taps = self.project.taps
+        if key == Qt.Key_Backspace:
+            if taps:
+                taps.pop()
+        else:
+            plan = self.project.plan
+            # what you hear now, minus a typical reaction delay
+            t = plan.song_start + max(0.0, self.player.position() / 1000.0 - 0.06)
+            taps.append((round(t, 3), TAP_KEYS[key]))  # kept in pressing order, so Backspace undoes the last press
+        self.timeline.set_taps(taps)
+        counts = {k: sum(1 for _, kind in taps if kind == k) for k in ("cut", "flash", "zoom", "shake", "drop")}
+        summary = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in counts.items() if n)
+        self.status.setText(f"{TAP_HELP}   [{summary or 'no taps yet'}]")
+
+    def clear_taps(self):
+        if self.job is not None or not self.project.taps:
+            return
+        self.project.clear_taps()
+        self.timeline.set_taps([])
+        self._replan("Removing your taps...")
 
     def region_removed(self, t: float):
         if self.job is not None or not self.project.remove_region(t):
@@ -678,6 +771,7 @@ class MainWindow(QMainWindow):
         self.timeline.set_plan(plan)
         self.timeline.set_drops(proj.direction.drops if proj.direction.drops is not None else None)
         self.timeline.set_regions([(r.start, r.end, r.note) for r in proj.direction.regions])
+        self.timeline.set_taps(proj.taps)
         d = proj.direction
         lines = []
         from ..listening import describe

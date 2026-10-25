@@ -129,6 +129,7 @@ class Moment:
     time: float      # song seconds
     action: str
     duration: float = 0.0
+    tapped: bool = False  # placed by the user in Tap to Direct (exact: snapped to a hit, never moved)
 
 
 @dataclass
@@ -143,6 +144,7 @@ class Direction:
     aspect: str | None = None                       # "16:9" | "9:16" | "1:1" suggested by the prompt
     repeats: str = "rarely"                         # never | rarely | allowed: reusing a scene
     regions: list[SectionDirection] = field(default_factory=list)  # per-region refinements (win over sections)
+    tap_cuts: list[float] = field(default_factory=list)            # cuts the user tapped (song seconds)
     drops: list[float] | None = None                # song seconds; None = use the song analysis
 
     def section_direction(self, t: float) -> SectionDirection | None:

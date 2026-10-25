@@ -20,9 +20,22 @@ The app checks for updates when it starts and offers to download new versions. Y
 5. **Director:**
    - **Free (on this PC):** no account needed. Understands keywords: fast, slow, calm, crazy, flashes, shake, zoom, glitch, slow mo, reverse, strobe, vertical, square, black and white, VHS, Y2K, glow, trails, letterbox, and times like "freeze at 1:05" or "flash at 0:42". You can aim words at parts of the song: "calm intro", "crazy drop".
    - **AI Director:** Claude looks at your footage, reads your idea in plain English and chooses which scenes go where. Needs your own Anthropic API key (Settings, then paste the key from [console.anthropic.com](https://console.anthropic.com/settings/keys)). You pay Anthropic directly; the cost of each edit is shown in the app.
-6. Press **Make Edit**. A preview plays when it's ready.
-7. **Refine** it in your own words ("more flashes in the drop", "use the rooftop scene at the end"), or press **New variation** for different shot choices with the same idea.
+6. Press **Make Edit**. A preview plays when it's ready. Under the timeline, **Heard:** lists what the app heard in the song (quiet intro, drums getting faster, solo, hard hits, the last note ringing out) and **Your timeline:** shows where each of your instructions landed.
+7. Fine-tune it:
+   - **Refine** the whole edit in your own words ("more flashes in the drop", "cut every 2 beats").
+   - **Refine one part:** drag across the timeline to select it, type what should happen there ("quicker cuts with punches", "hold one shot", "cut on the hits"), press Refine. Right-click a green section box to undo it.
+   - **Tap to Direct:** press it and tap along with the music: Space = cut, F = flash, Z = zoom, X = shake, D = drop, Backspace = undo. Taps snap to the nearest drum hit. Press **Done tapping** and the edit is rebuilt around your taps.
+   - **Fix a drop:** right-click the timeline where it really hits and choose **Mark the drop here**.
+   - **New variation** keeps the plan but picks different shots.
 8. **Export video** saves the full-quality MP4 to `Documents/Montage Director/Exports`.
+
+### Writing your idea as a timeline
+
+You can describe the whole song in order, with times or with musical moments:
+
+> The beginning should be one still shot during the cymbals, and as soon as the bass drops the action starts. At 1:36 when the drums get faster, quicker cuts with punches. At 2:30 back to the flow. Around 2:50 when the guitar solo starts, slower cuts. Around 3:57 the hard drums hitting 1, 2, 3, 4: cut on each hit. At the end when the last note rings, hold one shot of him posing.
+
+Each instruction runs until the next one (or until that part of the song ends). Rough times are moved to the moment the app hears nearby, so "around 2:50 when the solo starts" lands where the solo really begins.
 
 ## What it does under the hood
 

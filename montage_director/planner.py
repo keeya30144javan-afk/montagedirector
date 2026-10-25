@@ -58,7 +58,11 @@ class _Planner:
         # Everything a director times by hand is put on the song's real grid: the AI
         # can't hear the music, so its "1:36" may fall between two beats.
         self.d = direction = copy.deepcopy(direction)
+        self.tap_cuts = sorted({round(self.snap_tap(t), 3) for t in self.d.tap_cuts})
         for m in self.d.moments:
+            if m.tapped:
+                m.time = self.snap_tap(m.time)
+                continue
             if m.time < 0:  # "...then fade to black" at the very end
                 m.time = max(self.S, self.E - (m.duration or 1.5))
             elif m.action != "fade_black":
@@ -102,6 +106,31 @@ class _Planner:
 
     def song_t(self, frame: int) -> float:
         return self.S + frame / self.fps
+
+    def snap_tap(self, t: float) -> float:
+        """A tap by ear: lands on the drum hit you meant (within 100 ms), else on the
+        nearest beat or half-beat (within 120 ms), else exactly where you tapped."""
+        drums = self.song.kicks + self.song.snares
+        if drums:
+            d = min(drums, key=lambda x: abs(x - t))
+            if abs(d - t) <= 0.10:
+                return float(d)
+        if len(self.beats_a):
+            grid = np.concatenate([self.beats_a, (self.beats_a[:-1] + self.beats_a[1:]) / 2])
+            g = float(grid[np.argmin(np.abs(grid - t))])
+            if abs(g - t) <= 0.12:
+                return g
+        return float(t)
+
+    def tap_runs(self) -> list[tuple[float, float]]:
+        """Stretches where the user tapped cuts (taps less than 2 bars apart)."""
+        runs: list[list[float]] = []
+        for t in self.tap_cuts:
+            if runs and t - runs[-1][-1] <= 8 * self.beat:
+                runs[-1].append(t)
+            else:
+                runs.append([t])
+        return [(r[0], r[-1]) for r in runs]
 
     def snap(self, t: float, bar: bool = False, hit: bool = False) -> float:
         """Nearest musical moment: a strong drum hit (hit=True, within 120 ms), the start
@@ -350,15 +379,35 @@ class _Planner:
                 points.add(f)
                 priority.add(f)
 
+        # Tap to Direct: where the user tapped cuts, their cuts replace the automatic ones.
+        if self.tap_cuts:
+            runs = self.tap_runs()
+            inside = lambda f: any(self.frame_of(a) - 1 <= f <= self.frame_of(b + self.beat) for a, b in runs)
+            points = {p for p in points if not inside(p)}
+            priority = {p for p in priority if not inside(p)}
+            for t in self.tap_cuts:
+                if self.S < t < self.E:
+                    f = self.frame_of(t)
+                    points.add(f)
+                    priority.add(f)
+            self.tapped_frames = {self.frame_of(t) for t in self.tap_cuts}
+        else:
+            self.tapped_frames = set()
+
         # Too-short cuts read as glitches: keep a minimum length (priority points win).
         min_len = max(3, int(round(0.12 * self.fps)))
+        tap_min = max(2, int(round(0.08 * self.fps)))  # tapped cuts may sit closer together
         ordered = sorted(p for p in points if 0 < p < self.total)
         kept = [0]
         for p in ordered:
-            if p - kept[-1] >= min_len:
+            gap = tap_min if (p in self.tapped_frames and kept[-1] in self.tapped_frames) else min_len
+            if p - kept[-1] >= gap:
                 kept.append(p)
             elif p in priority and kept[-1] not in priority and len(kept) > 1 and p - kept[-2] >= min_len:
                 kept[-1] = p
+            elif p in self.tapped_frames and kept[-1] not in self.tapped_frames and len(kept) > 1 \
+                    and p - kept[-2] >= min_len:
+                kept[-1] = p  # a tapped cut beats an automatic one
         if self.total - kept[-1] < min_len and len(kept) > 1:
             kept.pop()
         kept.append(self.total)
@@ -376,6 +425,8 @@ class _Planner:
             max_len = int((6.0 if label in ("intro", "outro", "breakdown") else 4.0) * self.fps)
             if self.hold_at(self.song_t(final[-1]) + 0.01):
                 max_len = int(30.0 * self.fps)  # one shot held on purpose, up to 30 s
+            elif self.tap_cuts and any(self.frame_of(a) - 1 <= final[-1] <= self.frame_of(b) for a, b in self.tap_runs()):
+                max_len = int(12.0 * self.fps)  # the user chose these cut lengths by ear
             while p - final[-1] > max_len:
                 inside = [b for b in beat_frames if final[-1] + min_len <= b <= final[-1] + max_len and p - b >= min_len]
                 final.append(inside[-1] if inside else final[-1] + max_len)

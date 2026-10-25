@@ -230,3 +230,29 @@ def test_refining_one_region_changes_only_that_region(analysed):
     outside = lambda plan: [(c.f0, c.shot) for c in plan.cuts if c.f1 / plan.fps <= 9.5]
     assert outside(before) == outside(after), "parts before the selection must not change"
     assert proj.remove_region(12.0) and not proj.direction.regions
+
+
+def test_tapped_cuts_snap_to_hits_and_replace_auto_cuts(band_song, media):
+    from montage_director.project import Project, Settings
+
+    song, footage = analyze_song(band_song), analyze_footage([media])
+    proj = Project(settings=Settings(style="hype", seed=13))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    auto = proj.make_plan()
+    # Someone tapping along by ear: a little late on each of the four hard hits, plus a flash.
+    proj.taps = [(56.07, "cut"), (56.55, "cut"), (57.04, "cut"), (57.56, "cut"), (56.09, "flash")]
+    proj.apply_taps()
+    plan = proj.make_plan()
+    fps = plan.fps
+    starts = [c.f0 / fps for c in plan.cuts]
+    for hit in (56.0, 56.5, 57.0, 57.5):  # snapped onto the real hits
+        assert min(abs(t - hit) for t in starts) <= 1 / fps + 0.02, hit
+    inside = [t for t in starts if 56.0 - 0.05 <= t <= 57.5 + 0.05]
+    assert len(inside) == 4, f"only the tapped cuts inside the tapped stretch, got {inside}"
+    flashes = [(c.f0 + e.frame) / fps for c in plan.cuts for e in c.effects if e.kind == "flash"]
+    assert any(abs(t - 56.0) <= 1 / fps + 0.02 for t in flashes)
+    early = lambda p: [(c.f0, c.shot) for c in p.cuts if c.f1 / fps <= 40.0]
+    assert early(auto) == early(plan), "cuts far from the taps must not change"
+    proj.clear_taps()
+    assert proj.make_plan().cuts[0].f0 == 0 and not proj.direction.tap_cuts
