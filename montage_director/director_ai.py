@@ -27,7 +27,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .direction import (CUT_CHOICES, EFFECTS, MOMENT_ACTIONS, STYLES, Direction, Moment,
-                        SectionDirection)
+                        SectionDirection, asks_for_effects)
 from .ffmpeg_tools import check_cancel
 from .footage import Footage, Shot
 from .music import SongMap
@@ -439,8 +439,13 @@ class AIDirector:
             "Available styles: " + "; ".join(f"{s.id}: {s.description}" for s in STYLES.values())),
             # Everything up to here is identical on refine requests: cache it.
             "cache_control": {"type": "ephemeral"}})
+        pure = STYLES[base_style].pure and not asks_for_effects(prompt)
+        rules = ("\nThe user chose Clean Beat Sync: cuts only. Use style 'clean', grade 'none', all effects 0, "
+                 "glow/trails/grain 0, no letterbox, and only 'cut' moments. Cut on every beat "
+                 "(cut_every_beats 1) unless the idea asks for another rate." if pure else "")
         content.append({"type": "text", "text": "THE USER'S IDEA\n" + (prompt.strip() or
-                        "(no prompt: make the best edit you can for this song and footage)")})
+                        "(no prompt: make the best edit you can for this song and footage)") + rules})
+        self._pure = pure
         self.messages = [{"role": "user", "content": content}]
         self._song, self._footage, self._range = song, footage, (song_start, song_end)
         return self._ask()
@@ -464,6 +469,13 @@ class AIDirector:
         self.messages.append({"role": "assistant", "content": message.content})
         self.last_raw = raw
         d = to_direction(raw, self._footage, *self._range)
+        if getattr(self, "_pure", False):
+            # Clean Beat Sync is a promise: whatever the model said, cuts only.
+            d.style = copy.deepcopy(STYLES["clean"])
+            d.look = Look()
+            for sec in d.sections:
+                sec.effects = {k: 0.0 for k in EFFECTS}
+            d.moments = [m for m in d.moments if m.action == "cut"]
         ui = [sid for sid, t in self.tags.items() if t.get("kind") == "text_or_ui"]
         d.avoid_shots = sorted(set(d.avoid_shots) | set(ui))
         return d

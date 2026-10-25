@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .direction import DEFAULT_STYLE, Direction, read_prompt, style_direction
+from .direction import DEFAULT_STYLE, Direction, asks_for_effects, read_prompt, style_direction
 from .director_ai import DEFAULT_MODEL, AIDirector
 from .footage import Footage, analyze_footage
 from .music import SongMap, analyze_song
@@ -87,6 +87,8 @@ class Project:
         else:
             self.direction = read_prompt(s.prompt, style_direction(s.style))
             self.direction.summary = ""
+            if self.direction.style.pure and asks_for_effects(s.prompt):
+                self.direction.style.pure = False  # they asked for effects on top of clean cuts
         if self.manual_drops is not None:  # the user's own drop marks win
             self.direction.drops = list(self.manual_drops)
         return self.direction

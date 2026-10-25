@@ -39,6 +39,7 @@ class Style:
     blur_into_sections: bool = False
     energy_bias: float = 0.0                  # push shot choice toward calmer (-) or wilder (+) footage
     look: Look = field(default_factory=Look)
+    pure: bool = False                        # cuts only: no automatic effects, fades or speed changes
 
 
 def _cuts(intro, verse, build, drop, breakdown, outro):
@@ -96,10 +97,11 @@ STYLES: dict[str, Style] = {s.id: s for s in [
     ),
     Style(
         "clean", "Clean Beat Sync",
-        "Pure cuts on the beat. No effects, no colour changes.",
-        _cuts(2, 2, 1, 1, 2, 4),
+        "A cut on every beat, nothing else: no effects, no colour changes. "
+        "Say \"every 2 beats\" or \"every bar\" for slower cutting.",
+        _cuts(1, 1, 1, 1, 1, 1),
         {label: _fx() for label in SECTION_LABELS},
-        flash_top=0.0, flash_frames=2,
+        flash_top=0.0, flash_frames=2, pure=True,
     ),
 ]}
 DEFAULT_STYLE = "hype"
@@ -323,6 +325,16 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
                                         duration=1.0 if a in ("freeze", "slowmo", "shake") else 0.0))
             notes.append(f"{m.group(0)}: " + ", ".join(actions))
 
+    # Cut rate in beats: "cut every 2 beats", "every other beat", "every bar", "on every beat"
+    for clause in clauses:
+        rate = _cut_rate(clause)
+        if rate is None or _TIME.search(clause):
+            continue
+        labels = {lab for w, lab in _SECTION_WORDS.items() if re.search(r"\b" + re.escape(w) + r"\b", clause)}
+        for lab in (labels or SECTION_LABELS):
+            d.style.cut_every[lab] = rate
+        notes.append(("/".join(sorted(labels)) + ": " if labels else "") + f"a cut every {_rate_label(rate)}")
+
     # Repeats: "no repeats", "don't repeat scenes", "never reuse clips" / "repeat the intro shot"
     if re.search(r"\b(no|don'?t|do not|never|without|avoid|stop)\b[\w\s]{0,20}\b(repeat|repeats|repeating|reuse|reusing|duplicate|duplicates|same (clip|scene|shot)s?)\b", text):
         d.repeats = "never"
@@ -381,3 +393,35 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
 
 def _mmss(t: float) -> str:
     return f"{int(t // 60)}:{int(t % 60):02d}"
+
+
+_NUM = {"one": 1, "two": 2, "three": 3, "four": 4, "eight": 8, "other": 2, "single": 1, "each": 1}
+
+
+def _cut_rate(clause: str) -> float | None:
+    """Beats per cut from phrases like 'every 2 beats', 'every other beat', 'every bar', 'twice a beat'."""
+    if re.search(r"\b(twice (a|per|every) beat|half[- ]beats?|double[- ]time|every half beat)\b", clause):
+        return 0.5
+    m = re.search(r"\b(?:every|each|on (?:every|each|the))\s+(\d+|one|two|three|four|eight|other|single)?\s*"
+                  r"(beat|beats|bar|bars|measure|measures)\b", clause)
+    if not m:
+        return None
+    n = m.group(1)
+    count = float(_NUM.get(n, n)) if n else 1.0
+    per = 4.0 if m.group(2).startswith(("bar", "measure")) else 1.0
+    return min((0.5, 1.0, 2.0, 4.0, 8.0), key=lambda c: abs(c - count * per))
+
+
+def _rate_label(rate: float) -> str:
+    return {0.5: "half beat", 1.0: "beat", 2.0: "2 beats", 4.0: "bar", 8.0: "2 bars"}[rate]
+
+
+_EFFECT_WORDS = ("flash", "shake", "zoom", "glitch", "rgb", "slow mo", "slowmo", "slow-mo", "slow motion",
+                 "reverse", "strobe", "invert", "glow", "bloom", "trail", "ghost", "freeze", "fade", "letterbox",
+                 "vhs", "grain", "black and white", "b&w", "monochrome", "y2k", "cinematic", "grade", "effect")
+
+
+def asks_for_effects(prompt: str) -> bool:
+    """True when a prompt explicitly asks for an effect or a look."""
+    text = prompt.lower()
+    return any(w in text for w in _EFFECT_WORDS) and not re.search(r"\b(no|without)\s+(effects|fx)\b", text)

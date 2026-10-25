@@ -138,3 +138,17 @@ def test_one_shot_section_is_held_without_cuts(analysed):
     first = plan.cuts[0]
     assert first.shot == shot and first.f1 >= int(8.5 * 24), "the opening should be one held shot"
     assert first.speed < 1.0, "a 4 s shot held for ~9 s is slowed down instead of running into the next scene"
+
+
+def test_clean_beat_sync_is_cuts_only_on_every_beat(analysed):
+    song, footage = analysed
+    beat = 60 / song.tempo
+    for prompt, beats_per_cut in (("", 1), ("cut every 2 beats", 2)):
+        plan = make_plan(song, footage, read_prompt(prompt, style_direction("clean")), OutputSettings(fps=24, seed=9))
+        assert not any(c.effects for c in plan.cuts), "Clean must not add effects"
+        assert all(c.speed == 1 and not c.reverse and not c.freeze for c in plan.cuts)
+        assert plan.look.grade == "none" and plan.look.glow == 0
+        first, last = song.beats[0], song.beats[-1]
+        inner = [c for c in plan.cuts if first + 0.1 < c.f0 / 24 < last - 2 * beat]
+        on_rate = [c for c in inner if abs(c.frames / 24 / beat - beats_per_cut) < 0.25]
+        assert len(on_rate) >= 0.9 * len(inner), (prompt, len(on_rate), len(inner))

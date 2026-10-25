@@ -250,6 +250,11 @@ class _Planner:
         pool = [s for s in self.shots if self.allowed(s)]
         if not pool:  # tiny footage: fall back to anything not shown in the last few cuts
             pool = [s for s in self.shots if self.cut_i - self.group_last.get(s.group, -99) > 2] or self.shots
+        # Prefer shots long enough for the cut, so it never runs on into the next scene
+        # (that would show up as an extra cut that isn't on the beat).
+        long_enough = [s for s in pool if s.duration >= need]
+        if len(long_enough) >= max(3, len(pool) // 5):
+            pool = long_enough
         best, best_score = None, -1e9
         for s in pool:
             score = -2.2 * abs(s.motion - target)
@@ -303,7 +308,7 @@ class _Planner:
                 reverse = True
             need = dur * speed
             shot = self.pick_shot(t0, need, prev)
-            if shot.duration < need * 0.9 and dur >= 1.5:
+            if shot.duration < need * 0.9 and dur >= 1.5 and not self.d.style.pure:
                 # Shot shorter than the cut (a long hold): stretch it with slow motion
                 # instead of running past it into the next scene.
                 speed = max(0.25, round((shot.duration - 0.05) / dur, 3))
@@ -418,9 +423,10 @@ class _Planner:
                     if not cuts[i].freeze:
                         self.split_freeze(cuts, i, min(beat_f, cuts[i].frames // 2))
 
-        # Ending: fade to black on the last second when the song is cut short or ends.
-        last = cuts[-1]
-        self.add(cuts, max(last.f0, self.total - self.fps), "fade_black", self.fps, 1.0, "black")
+        # Ending: fade to black on the last second (not for cuts-only styles).
+        if not st.pure:
+            last = cuts[-1]
+            self.add(cuts, max(last.f0, self.total - self.fps), "fade_black", self.fps, 1.0, "black")
 
     def split_freeze(self, cuts: list[Cut], i: int, hold: int) -> None:
         """Freeze the last `hold` frames of cut i (the beat before a drop)."""
