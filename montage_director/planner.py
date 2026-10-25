@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import random
 from dataclasses import dataclass
@@ -46,12 +47,30 @@ class _Planner:
         self.uses: dict[int, int] = {}
         self.used_windows: dict[int, list[tuple[float, float]]] = {}
         self.order_pos: dict[int, int] = {}
+        self.order_used: dict[int, set[int]] = {}
         # Scene groups: pieces of one take and near-duplicate moments count as the same scene.
         self.group_uses: dict[int, int] = {}
         self.group_last: dict[int, int] = {}
         self.cut_i = 0
         self.n_groups = len({s.group for s in self.shots}) or 1
-        self.drops = sorted(direction.drops) if direction.drops is not None else list(song.drops)
+        self.beats_a = np.asarray(song.beats, dtype=float)
+        self.down_a = np.asarray(song.downbeats, dtype=float)
+        # Everything a director times by hand is put on the song's real grid: the AI
+        # can't hear the music, so its "1:36" may fall between two beats.
+        self.d = direction = copy.deepcopy(direction)
+        for sd in self.d.sections:
+            sd.start, sd.end = self.snap(sd.start, bar=True), self.snap(sd.end, bar=True)
+        for m in self.d.moments:
+            if m.action != "fade_black":
+                m.time = self.snap(m.time, hit=m.action in ("flash", "rgb", "invert", "fade_white"))
+        if direction.drops is None:
+            self.drops = list(song.drops)
+        else:
+            snapped = []
+            for t in direction.drops:
+                near = [d for d in song.drops if abs(d - t) <= 4 * self.beat]
+                snapped.append(min(near, key=lambda d: abs(d - t)) if near else self.snap(t, bar=True))
+            self.drops = sorted(set(snapped))
 
     # ----- helpers ----------------------------------------------------------- #
     def frame_of(self, song_t: float) -> int:
@@ -59,6 +78,29 @@ class _Planner:
 
     def song_t(self, frame: int) -> float:
         return self.S + frame / self.fps
+
+    def snap(self, t: float, bar: bool = False, hit: bool = False) -> float:
+        """Nearest musical moment: a strong drum hit (hit=True, within 120 ms), the start
+        of a bar (bar=True, within 1.5 beats), otherwise the nearest beat."""
+        if hit:
+            close = [h for h in self.hits_near(t) if abs(h[0] - t) <= 0.12 and h[1] >= 0.35]
+            if close:
+                return float(max(close, key=lambda h: h[1])[0])
+        if bar and len(self.down_a):
+            d = float(self.down_a[np.argmin(np.abs(self.down_a - t))])
+            if abs(d - t) <= 1.5 * self.beat:
+                return d
+        if len(self.beats_a):
+            b = float(self.beats_a[np.argmin(np.abs(self.beats_a - t))])
+            if abs(b - t) <= self.beat:
+                return b
+        return float(t)
+
+    @staticmethod
+    def usable_len(shot: Shot) -> float:
+        """Shot boundaries are found 6 times a second, so keep clear of the edges:
+        never show the last frames before the source cuts to another scene."""
+        return max(0.0, shot.duration - 0.38)
 
     def hold_at(self, t: float) -> SectionDirection | None:
         """A section the director wants as ONE held shot (one shot listed, 8+ beats per cut)."""
@@ -143,16 +185,10 @@ class _Planner:
                 f = self.frame_of(t)
                 points.add(f)
                 priority.add(f)
-        # Sections the director asked for ("at 1:34 ...") start on the nearest beat.
-        all_beats = self.song.beats
+        # Sections the director asked for ("at 1:34 ...") start on the grid (snapped in __init__).
         for sd in self.d.sections:
             if self.S < sd.start < self.E:
-                t = sd.start
-                if all_beats:
-                    nearest = min(all_beats, key=lambda b: abs(b - t))
-                    if abs(nearest - t) <= self.beat * 0.6:
-                        t = nearest
-                f = self.frame_of(t)
+                f = self.frame_of(sd.start)
                 points.add(f)
                 priority.add(f)
         for m in self.d.moments:
@@ -228,14 +264,15 @@ class _Planner:
             # The director's list for this section, in order, each scene once.
             key = id(sd)
             ordered = [i for i in sd.shots if 0 <= i < len(self.footage.shots) and i not in self.avoid]
-            pos = self.order_pos.get(key, 0)
-            while pos < len(ordered):
-                s = self.footage.shots[ordered[pos]]
-                pos += 1
-                if self.allowed(s):
-                    self.order_pos[key] = pos
-                    return s
-            self.order_pos[key] = pos  # list used up
+            consumed = self.order_used.setdefault(key, set())
+            waiting = [i for i in ordered if i not in consumed and self.allowed(self.footage.shots[i])]
+            # In order, but skip shots too short for this cut (they're kept for a shorter one),
+            # so a clip never runs on into the next scene in the source.
+            fitting = [i for i in waiting if self.usable_len(self.footage.shots[i]) >= need]
+            if fitting or waiting:
+                sid = fitting[0] if fitting else max(waiting, key=lambda i: self.footage.shots[i].duration)
+                consumed.add(sid)
+                return self.footage.shots[sid]
             if ordered and self.d.repeats != "never":
                 # A section the director filled on purpose (e.g. "punches at 1:34"): re-hit its
                 # own shots, from a different moment, before reaching for unrelated footage.
@@ -252,7 +289,7 @@ class _Planner:
             pool = [s for s in self.shots if self.cut_i - self.group_last.get(s.group, -99) > 2] or self.shots
         # Prefer shots long enough for the cut, so it never runs on into the next scene
         # (that would show up as an extra cut that isn't on the beat).
-        long_enough = [s for s in pool if s.duration >= need]
+        long_enough = [s for s in pool if self.usable_len(s) >= need]
         if len(long_enough) >= max(3, len(pool) // 5):
             pool = long_enough
         best, best_score = None, -1e9
@@ -276,7 +313,8 @@ class _Planner:
     def in_point(self, shot: Shot, need: float, energetic: bool) -> float:
         src = self.footage.sources[shot.source]
         latest = max(0.0, src.duration - need - 0.05)
-        lo, hi = shot.start, max(shot.start, shot.end - need)
+        lo = shot.start + 0.08
+        hi = max(lo, shot.start + self.usable_len(shot) + 0.08 - need)
         if energetic:
             start = shot.peak - need * 0.4
         else:
@@ -308,10 +346,10 @@ class _Planner:
                 reverse = True
             need = dur * speed
             shot = self.pick_shot(t0, need, prev)
-            if shot.duration < need * 0.9 and dur >= 1.5 and not self.d.style.pure:
-                # Shot shorter than the cut (a long hold): stretch it with slow motion
-                # instead of running past it into the next scene.
-                speed = max(0.25, round((shot.duration - 0.05) / dur, 3))
+            if self.usable_len(shot) < need and not self.d.style.pure:
+                # Shot shorter than the cut: stretch it with slow motion instead of
+                # running past it into the next scene (which reads as an off-beat cut).
+                speed = max(0.25, round(self.usable_len(shot) / dur, 3))
                 need = dur * speed
             energetic = self.target_energy(t0, t1) > 0.5
             start = self.in_point(shot, need, energetic)

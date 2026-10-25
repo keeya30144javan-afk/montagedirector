@@ -71,6 +71,7 @@ class SongMap:
             "range": [round(start, 2), round(end, 2)],
             "sections": [s.to_dict() for s in self.sections if s.end > start and s.start < end],
             "drops": [round(d, 2) for d in self.drops if start <= d < end],
+            "bar_starts": [round(b, 2) for b in self.downbeats if start <= b < end],
             "biggest_hits": [round(t, 2) for t, _ in sorted(
                 (h for h in self.hits if start <= h[0] < end), key=lambda h: -h[1])[:24]],
         }

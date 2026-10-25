@@ -152,3 +152,31 @@ def test_clean_beat_sync_is_cuts_only_on_every_beat(analysed):
         inner = [c for c in plan.cuts if first + 0.1 < c.f0 / 24 < last - 2 * beat]
         on_rate = [c for c in inner if abs(c.frames / 24 / beat - beats_per_cut) < 0.25]
         assert len(on_rate) >= 0.9 * len(inner), (prompt, len(on_rate), len(inner))
+
+
+def test_ai_style_off_grid_times_land_on_the_beat(analysed):
+    """The AI can't hear the song: its section starts, drops and moments are rough guesses.
+    The planner must put all of them on the beat grid, and shots must not run into the next scene."""
+    import numpy as np
+
+    from montage_director.direction import EFFECTS, Moment, SectionDirection
+
+    song, footage = analysed
+    d = style_direction("hype")
+    shots = [s.id for s in footage.usable_shots()]
+    for a, b in ((0, 5.3), (5.3, 12.7), (12.7, song.duration)):
+        d.sections.append(SectionDirection(start=a, end=b, cut_every=1.0, shots=list(shots),
+                                           effects={k: 0.5 for k in EFFECTS}))
+    d.drops = [8.31]                       # the real drop is at 8.0
+    d.moments = [Moment(10.27, "flash"), Moment(14.6, "cut")]
+    plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=10))
+    beats = np.array(song.beats)
+    grid = np.concatenate([beats, (beats[:-1] + beats[1:]) / 2])
+    for c in plan.cuts[1:]:
+        t = c.f0 / 24
+        if beats[0] < t < beats[-1]:
+            assert np.min(np.abs(grid - t)) <= 1 / 24 + 0.01, f"cut at {t:.3f}s is off the beat"
+    for c in plan.cuts:
+        s = footage.shots[c.shot]
+        if not c.freeze:
+            assert c.src_start + c.frames / 24 * c.speed <= s.end + 0.01 or c.speed <= 0.25

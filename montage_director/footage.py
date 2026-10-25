@@ -22,10 +22,10 @@ from .paths import cache_dir, file_key
 
 log = logging.getLogger(__name__)
 
-ANALYSIS_FPS = 4.0
+ANALYSIS_FPS = 6.0
 THUMB_W, THUMB_H = 256, 144
 STRIP_W, STRIP_H = 160, 90
-ANALYSIS_VERSION = 8
+ANALYSIS_VERSION = 9
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".wmv", ".flv", ".ts"}
 
 
@@ -273,7 +273,11 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
             diff = float(np.abs(hist - prev_hist).sum())  # 0..2
             local = float(np.median(recent_diffs)) if recent_diffs else 0.0
             # A cut is a histogram jump that stands out from recent frames.
-            is_cut = diff > 0.45 and diff > 3.0 * local + 0.1 and len(seg) >= 2
+            # Compilations use fast transitions, so be sensitive; a hard cut also
+            # usually changes the brightness layout, which motion alone rarely does.
+            is_cut = len(seg) >= 2 and (
+                (diff > 0.45 and diff > 3.0 * local + 0.1)
+                or (diff > 0.32 and diff > 2.2 * local + 0.08 and motion > 0.12))
             recent_diffs = (recent_diffs + [diff])[-8:]
         if is_cut or len(seg) >= max_frames:
             close_segment()
