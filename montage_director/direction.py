@@ -133,6 +133,8 @@ class Direction:
     summary: str = ""
     notes: list[str] = field(default_factory=list)   # what the director understood, for the UI
     aspect: str | None = None                       # "16:9" | "9:16" | "1:1" suggested by the prompt
+    repeats: str = "rarely"                         # never | rarely | allowed: reusing a scene
+    drops: list[float] | None = None                # song seconds; None = use the song analysis
 
     def section_direction(self, t: float) -> SectionDirection | None:
         for s in self.sections:
@@ -221,12 +223,16 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
 
     # Whole-edit words (only when they were not tied to a section above)
     every = list(SECTION_LABELS)
-    global_text = text
-    if _has(global_text, _FASTER) and not targeted:
+    # Sentences with a time ("at 1:34 ...") only affect that moment, not the whole edit.
+    # Sentences that name a part of the song ("crazy drop") only affect that part.
+    def _names_section(c):
+        return any(re.search(r"\b" + re.escape(w) + r"\b", c) for w in _SECTION_WORDS)
+    global_text = " " + " ".join(c for c in clauses if not _TIME.search(c) and not _names_section(c)) + " "
+    if _has(global_text, _FASTER):
         scale_cuts(every, 0.5)
         d.style.energy_bias = min(0.5, d.style.energy_bias + 0.2)
         notes.append("faster cuts, wilder shots")
-    if _has(global_text, _SLOWER) and not targeted:
+    if _has(global_text, _SLOWER):
         scale_cuts(every, 2.0)
         bump(every, "slowmo", 0.3)
         d.style.energy_bias = max(-0.5, d.style.energy_bias - 0.2)
@@ -238,12 +244,12 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
         d.style.flash_top = 0.0
         d.look = Look()
         notes.append("no effects")
-    if "flash" in text and not targeted:
-        if _negated(text, "flash"):
+    if "flash" in global_text:
+        if _negated(global_text, "flash"):
             d.style.flash_top = 0.0
             bump(every, "flash", -1)
             notes.append("no flashes")
-        elif _has(text, ("lots of", "more", "tons of", "many", "heavy")):
+        elif _has(global_text, ("lots of", "more", "tons of", "many", "heavy")):
             d.style.flash_top = min(0.3, d.style.flash_top * 2 + 0.04)
             bump(every, "flash", 0.3)
             notes.append("more flashes")
@@ -252,8 +258,8 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
                                 ("slow mo", "slowmo", "slow motion"), ("slowmo", "slowmo", "slow motion"),
                                 ("slow motion", "slowmo", "slow motion"), ("reverse", "reverse", "reversed clips"),
                                 ("strobe", "invert", "negative strobes")):
-        if word in text and not targeted:
-            if _negated(text, word):
+        if word in global_text:
+            if _negated(global_text, word):
                 bump(every, effect, -1)
                 notes.append(f"no {label}")
             else:
@@ -292,6 +298,8 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
 
     # Timed moments: "freeze at 1:05", "flash at 0:42", "drop hits at 1:10"
     for clause in clauses:
+        if len(_TIME.findall(clause)) > 1:
+            continue  # "from 2:10 to 2:30 ...": a timed section (handled below), not two single effects
         for m in _TIME.finditer(clause):
             t = int(m.group(1)) * 60 + int(m.group(2))
             actions = []
@@ -301,12 +309,75 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
                                  ("fade", "fade_black")):
                 if word in clause:
                     actions.append(action)
-            if "drop" in clause or not actions:
-                actions = actions or ["flash", "zoom", "shake"]
+            if "drop" in clause and not actions:
+                continue  # handled below as a drop position, with the full drop treatment
+            if not actions and _has(clause, ("quick", "fast", "rapid", "flurry", "barrage", "crazy", "hype",
+                                             "aggressive", "hard", "slow", "calm", "chill", "emotional", "sad",
+                                             "soft", "punch", "punches", "punching", "fight", "fighting", "kick",
+                                             "kicks", "attack", "attacks", "explosion", "explosions", "blast",
+                                             "action", "combo", "hits")):
+                continue  # a timed section (handled below), not a single effect
+            actions = actions or ["flash", "zoom", "shake"]
             for a in actions:
                 d.moments.append(Moment(time=float(t), action=a,
                                         duration=1.0 if a in ("freeze", "slowmo", "shake") else 0.0))
             notes.append(f"{m.group(0)}: " + ", ".join(actions))
 
+    # Repeats: "no repeats", "don't repeat scenes", "never reuse clips" / "repeat the intro shot"
+    if re.search(r"\b(no|don'?t|do not|never|without|avoid|stop)\b[\w\s]{0,20}\b(repeat|repeats|repeating|reuse|reusing|duplicate|duplicates|same (clip|scene|shot)s?)\b", text):
+        d.repeats = "never"
+        notes.append("no repeated scenes")
+    elif re.search(r"\b(repeat|reuse|callback)\b", text):
+        d.repeats = "allowed"
+        notes.append("repeats allowed")
+
+    # Timed instructions: "at 1:34 quick edits of him throwing punches",
+    # "from 2:10 to 2:30 slow motion", "at 0:50 calm for 8 seconds".
+    for clause in clauses:
+        times = list(_TIME.finditer(clause))
+        if not times or "drop" in clause:
+            continue
+        quick = _has(clause, ("quick", "fast", "rapid", "quick cuts", "quick edits", "flurry", "barrage",
+                              "crazy", "hype", "aggressive", "hard"))
+        calm = _has(clause, ("slow", "calm", "chill", "emotional", "sad", "soft", "long shots"))
+        action = _has(clause, ("punch", "punches", "punching", "fight", "fighting", "kick", "kicks", "attack",
+                               "attacks", "explosion", "explosions", "blast", "action", "combo", "hits"))
+        if not (quick or calm or action):
+            continue
+        t0 = float(int(times[0].group(1)) * 60 + int(times[0].group(2)))
+        if len(times) > 1:
+            t1 = float(int(times[1].group(1)) * 60 + int(times[1].group(2)))
+        else:
+            m = re.search(r"for (\d+(?:\.\d+)?) ?(s|sec|secs|seconds|bars?)", clause)
+            if m:
+                t1 = t0 + float(m.group(1)) * (2.0 if m.group(2).startswith("bar") else 1.0)
+            else:
+                t1 = t0 + 8.0
+        if t1 <= t0:
+            continue
+        fx = {}
+        if quick or action:
+            fx = {"flash": 0.6, "zoom": 0.6, "shake": 0.7 if action else 0.4, "rgb": 0.2}
+        if calm:
+            fx = {"slowmo": 0.6}
+        d.sections.append(SectionDirection(
+            start=t0, end=t1, cut_every=0.5 if quick else (4.0 if calm else 1.0),
+            energy=1.0 if (quick or action) else (0.15 if calm else None), effects=fx,
+            note=clause.strip()))
+        notes.append(f"{times[0].group(0)}–{_mmss(t1)}: " + ("quick cuts" if quick else "calm, slow" if calm else "action")
+                     + (", high-action shots" if action else ""))
+    d.sections.sort(key=lambda s: s.start)
+
+    # "the drop is at 1:05" / "drop hits at 1:05": correct the drop position
+    for clause in clauses:
+        if "drop" in clause:
+            for m in _TIME.finditer(clause):
+                t = float(int(m.group(1)) * 60 + int(m.group(2)))
+                d.drops = sorted(set((d.drops or []) + [t]))
+
     d.notes = notes or ["(no keywords recognised: using the style as-is)"]
     return d
+
+
+def _mmss(t: float) -> str:
+    return f"{int(t // 60)}:{int(t % 60):02d}"

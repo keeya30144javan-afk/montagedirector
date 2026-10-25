@@ -46,6 +46,12 @@ class _Planner:
         self.uses: dict[int, int] = {}
         self.used_windows: dict[int, list[tuple[float, float]]] = {}
         self.order_pos: dict[int, int] = {}
+        # Scene groups: pieces of one take and near-duplicate moments count as the same scene.
+        self.group_uses: dict[int, int] = {}
+        self.group_last: dict[int, int] = {}
+        self.cut_i = 0
+        self.n_groups = len({s.group for s in self.shots}) or 1
+        self.drops = sorted(direction.drops) if direction.drops is not None else list(song.drops)
 
     # ----- helpers ----------------------------------------------------------- #
     def frame_of(self, song_t: float) -> int:
@@ -55,7 +61,12 @@ class _Planner:
         return self.S + frame / self.fps
 
     def label_at(self, t: float) -> str:
-        return self.song.section_at(t + 0.5 / self.fps).label
+        t += 0.5 / self.fps
+        label = self.song.section_at(t).label
+        # A drop the user (or AI) placed by hand drives the next 8 bars like a drop.
+        if label not in ("drop", "build") and any(d <= t < d + 32 * self.beat for d in self.drops):
+            return "drop"
+        return label
 
     def hits_near(self, t: float):
         lo, hi = 0, len(self.song.hits)
@@ -120,8 +131,20 @@ class _Planner:
                 f = self.frame_of(s.start)
                 points.add(f)
                 priority.add(f)
-        for t in self.song.drops:
+        for t in self.drops:
             if self.S < t < self.E:
+                f = self.frame_of(t)
+                points.add(f)
+                priority.add(f)
+        # Sections the director asked for ("at 1:34 ...") start on the nearest beat.
+        all_beats = self.song.beats
+        for sd in self.d.sections:
+            if self.S < sd.start < self.E:
+                t = sd.start
+                if all_beats:
+                    nearest = min(all_beats, key=lambda b: abs(b - t))
+                    if abs(nearest - t) <= self.beat * 0.6:
+                        t = nearest
                 f = self.frame_of(t)
                 points.add(f)
                 priority.add(f)
@@ -165,25 +188,58 @@ class _Planner:
         section = self.song.section_at(t0).energy
         return float(np.clip(0.55 * music + 0.45 * section + self.d.style.energy_bias, 0, 1))
 
+    def allowed(self, s: Shot) -> bool:
+        """Repeat rules: never the same moment twice; a scene comes back only when the
+        footage has run out of fresh ones, and then as far apart as possible."""
+        if self.uses.get(s.id, 0) and len(self.uses) < len(self.shots):
+            return False
+        used = self.group_uses.get(s.group, 0)
+        if not used:
+            return True
+        policy = self.d.repeats
+        if policy == "allowed":
+            return self.cut_i - self.group_last.get(s.group, -99) > 6
+        fresh_left = len(self.group_uses) < self.n_groups
+        if fresh_left:
+            return False
+        if policy == "never":
+            # Out of scenes entirely: allow the least-used, longest-ago ones only.
+            least = min(self.group_uses.values())
+            return used == least and self.cut_i - self.group_last.get(s.group, 0) > max(8, self.n_groups * 3 // 4)
+        return self.cut_i - self.group_last.get(s.group, -99) > max(8, self.n_groups // 3)
+
     def pick_shot(self, t0: float, need: float, prev: Cut | None) -> Shot:
         sd = self.sd_at(t0)
         if sd and sd.shots:
+            # The director's list for this section, in order, each scene once.
+            key = id(sd)
             ordered = [i for i in sd.shots if 0 <= i < len(self.footage.shots) and i not in self.avoid]
-            if ordered:
-                key = id(sd)
-                pos = self.order_pos.get(key, 0)
-                for k in range(len(ordered)):
-                    sid = ordered[(pos + k) % len(ordered)]
-                    if prev is None or sid != prev.shot or len(ordered) == 1:
-                        self.order_pos[key] = pos + k + 1
-                        return self.footage.shots[sid]
+            pos = self.order_pos.get(key, 0)
+            while pos < len(ordered):
+                s = self.footage.shots[ordered[pos]]
+                pos += 1
+                if self.allowed(s):
+                    self.order_pos[key] = pos
+                    return s
+            self.order_pos[key] = pos  # list used up
+            if ordered and self.d.repeats != "never":
+                # A section the director filled on purpose (e.g. "punches at 1:34"): re-hit its
+                # own shots, from a different moment, before reaching for unrelated footage.
+                recent = {g for g, last in self.group_last.items() if self.cut_i - last <= 2}
+                again = [self.footage.shots[i] for i in ordered if self.footage.shots[i].group not in recent]
+                if again:
+                    return min(again, key=lambda s: (self.uses.get(s.id, 0), self.group_last.get(s.group, -1)))
+            # otherwise fill with fresh footage that fits the section
 
         target = self.target_energy(t0, t0 + need)
         n_sources = len(self.footage.sources)
+        pool = [s for s in self.shots if self.allowed(s)]
+        if not pool:  # tiny footage: fall back to anything not shown in the last few cuts
+            pool = [s for s in self.shots if self.cut_i - self.group_last.get(s.group, -99) > 2] or self.shots
         best, best_score = None, -1e9
-        for s in self.shots:
+        for s in pool:
             score = -2.2 * abs(s.motion - target)
-            score -= 1.4 * self.uses.get(s.id, 0)
+            score -= 1.4 * self.uses.get(s.id, 0) + 2.0 * self.group_uses.get(s.group, 0)
             if prev is not None:
                 if s.id == prev.shot:
                     score -= 4.0
@@ -237,6 +293,9 @@ class _Planner:
             start = self.in_point(shot, need, energetic)
             self.uses[shot.id] = self.uses.get(shot.id, 0) + 1
             self.used_windows.setdefault(shot.id, []).append((start, start + need))
+            self.group_uses[shot.group] = self.group_uses.get(shot.group, 0) + 1
+            self.group_last[shot.group] = self.cut_i
+            self.cut_i += 1
             src = self.footage.sources[shot.source]
             cut = Cut(f0=f0, f1=f1, shot=shot.id, source=src.path, src_start=round(start, 3),
                       speed=speed, reverse=reverse, section=label, crop=tuple(shot.crop))
@@ -248,6 +307,12 @@ class _Planner:
         plan = EditPlan(fps=self.fps, width=self.out.width, height=self.out.height,
                         song=self.song.path, song_start=round(self.S, 3), frames=self.total,
                         cuts=cuts, look=self.d.look, fit=self.out.fit, summary=self.d.summary)
+        reused = self.cut_i - len(self.group_uses)
+        if reused > 0:
+            plan.warnings.append(
+                f"Your footage has {len(self.group_uses)} different scenes but this edit needs {self.cut_i} cuts, "
+                f"so {reused} cuts reuse a scene (never back to back). Add more footage, use slower cuts, "
+                f"or edit a shorter part of the song to avoid repeats.")
         plan.validate()
         return plan
 
@@ -315,7 +380,7 @@ class _Planner:
                 self.add(cuts, f, "blur_in", max(3, beat_f // 2), 0.8)
 
         # Drops: the signature moment.
-        for t in self.song.drops:
+        for t in self.drops:
             if not (self.S < t < self.E):
                 continue
             f = self.frame_of(t)

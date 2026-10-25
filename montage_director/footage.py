@@ -24,7 +24,8 @@ log = logging.getLogger(__name__)
 
 ANALYSIS_FPS = 4.0
 THUMB_W, THUMB_H = 256, 144
-ANALYSIS_VERSION = 6
+STRIP_W, STRIP_H = 160, 90
+ANALYSIS_VERSION = 8
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".wmv", ".flv", ".ts"}
 
 
@@ -44,6 +45,10 @@ class Shot:
     usable: bool = True     # False for black or blank frames
     static: bool = False    # barely moves (stills, menus, talking heads)
     crop: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # picture inside baked-in bars
+    take: int = 0           # pieces of one continuous take share this (per source)
+    group: int = -1         # "same scene" group across the library: same take or a near-duplicate
+    sig: list[int] = field(default_factory=list, repr=False)  # tiny colour fingerprint
+    strip: str = ""         # JPEG of 3 frames (start, peak action, end) for the AI Director
 
     @property
     def duration(self) -> float:
@@ -131,12 +136,58 @@ def analyze_footage(paths: list[str | Path], cancel=None, progress=None) -> Foot
         for s in shots:
             footage.shots.append(Shot(
                 id=len(footage.shots), source=src_index,
+                take=src_index * 1_000_000 + int(s.get("take", 0)),
                 motion=float(np.clip((s["motion_raw"] - lo) / span, 0, 1)),
-                **{k: v for k, v in s.items() if k not in ("source",)},
+                **{k: v for k, v in s.items() if k not in ("source", "take")},
             ))
+    _group_scenes(footage)
     if progress:
         progress(1.0, footage.summary())
     return footage
+
+
+def _group_scenes(footage: Footage, threshold: float = 14.0) -> None:
+    """Give every shot a scene group: pieces of the same take, plus near-identical
+    moments anywhere in the library (compilations often show a clip twice)."""
+    shots = footage.shots
+    parent = list(range(len(shots)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    first_of_take: dict[int, int] = {}
+    for s in shots:
+        if s.take in first_of_take:
+            union(first_of_take[s.take], s.id)
+        else:
+            first_of_take[s.take] = s.id
+
+    with_sig = [s for s in shots if len(s.sig) == 16 * 9 * 3 and s.usable]
+    if len(with_sig) > 1:
+        ids = np.array([s.id for s in with_sig])
+        sigs = np.array([s.sig for s in with_sig], np.float32)
+        for i in range(0, len(sigs), 256):
+            block = np.abs(sigs[i:i + 256, None, :] - sigs[None, :, :]).mean(axis=2)
+            for a, b in zip(*np.nonzero(block < threshold)):
+                ia, ib = i + int(a), int(b)
+                if ia < ib:
+                    union(int(ids[ia]), int(ids[ib]))
+
+    roots: dict[int, int] = {}
+    for s in shots:
+        s.group = roots.setdefault(find(s.id), len(roots))
+
+
+def scene_count(footage: Footage) -> int:
+    return len({s.group for s in footage.usable_shots()})
 
 
 def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
@@ -164,6 +215,7 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
     prev_gray = prev_hist = None
     expected = max(1, int(info.duration * ANALYSIS_FPS))
     count = 0
+    take = 0
 
     def close_segment():
         if len(seg) < 2:
@@ -172,7 +224,16 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
         m = np.array([f["motion"] for f in seg[1:]])
         mid = seg[len(seg) // 2]
         thumb = out_dir / f"shot_{len(shots):05d}.jpg"
-        Image.fromarray(mid["frame"]).save(thumb, quality=82)
+        mid_img = Image.fromarray(mid["frame"])
+        mid_img.save(thumb, quality=82)
+        sig = np.asarray(mid_img.resize((16, 9), Image.BILINEAR), np.uint8).reshape(-1)
+        peak_i = 1 + int(np.argmax(m))
+        picks = [int(len(seg) * 0.12), peak_i, min(len(seg) - 1, int(len(seg) * 0.88))]
+        strip_img = Image.new("RGB", (3 * STRIP_W, STRIP_H))
+        for k, i in enumerate(picks):
+            strip_img.paste(Image.fromarray(seg[i]["frame"]).resize((STRIP_W, STRIP_H), Image.BILINEAR), (k * STRIP_W, 0))
+        strip = out_dir / f"strip_{len(shots):05d}.jpg"
+        strip_img.save(strip, quality=78)
         br = np.array([f["bright"] for f in seg])
         # Baked-in bars: edge columns/rows whose median brightness never rises above near-black.
         lum = np.stack([f["frame"].mean(axis=2) for f in seg])
@@ -190,6 +251,9 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
             "usable": bool(br.mean() > 0.06),
             "static": bool(m.mean() < 0.002 and br.std() < 0.01),
             "crop": _bars(col_max, row_max),
+            "take": take,
+            "strip": str(strip),
+            "sig": [int(v) for v in sig],
         })
         seg.clear()
 
@@ -213,6 +277,8 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
             recent_diffs = (recent_diffs + [diff])[-8:]
         if is_cut or len(seg) >= max_frames:
             close_segment()
+            if is_cut:
+                take += 1
             if is_cut:
                 motion = 0.0  # the jump across a cut is not motion
         seg.append({

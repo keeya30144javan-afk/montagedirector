@@ -71,6 +71,7 @@ class EditPlan:
     look: Look = field(default_factory=Look)
     fit: str = "fill"       # fill (crop to fill) | fit (bars) | blur (blurred background)
     summary: str = ""
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def duration(self) -> float:

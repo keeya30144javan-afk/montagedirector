@@ -42,3 +42,48 @@ def media(tmp_path_factory):
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("MONTAGE_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+
+@pytest.fixture(scope="session")
+def edm_song(tmp_path_factory):
+    """128 BPM track with a riser + half-bar gap before each drop. Drops at 30.0 s and 90.0 s."""
+    import imageio_ffmpeg
+
+    sr, bpm = 22050, 128
+    beat = 60 / bpm
+    bar = 4 * beat
+    plan = [("intro", 8), ("build", 8), ("drop", 16), ("breakdown", 8), ("build", 8), ("drop", 16), ("outro", 4)]
+    t = np.arange(int(sr * sum(b for _, b in plan) * bar)) / sr
+    y = np.zeros_like(t)
+    rng = np.random.default_rng(1)
+    pos = 0.0
+    for name, bars in plan:
+        a, b = pos, pos + bars * bar
+        m = (t >= a) & (t < b)
+        y[m] += 0.15 * np.sin(2 * np.pi * 330 * t[m])
+        k = 0
+        while a + k * beat < b - 1e-6:
+            s0 = a + k * beat
+            i = int(s0 * sr)
+            n = min(int(0.3 * sr), len(t) - i)
+            tt = np.arange(n) / sr
+            kick = np.sin(2 * np.pi * (45 + 100 * np.exp(-35 * tt)) * tt) * np.exp(-8 * tt)
+            hat = rng.standard_normal(n) * np.exp(-60 * tt) * 0.25
+            if name == "drop":
+                y[i:i + n] += kick + hat
+            elif name == "build" and s0 < b - bar / 2:
+                y[i:i + n] += (0.25 + 0.4 * k * beat / (b - a)) * hat * 3
+            elif name in ("intro", "outro") and k % 4 == 0:
+                y[i:i + n] += 0.35 * kick
+            k += 1
+        if name == "build":
+            mm = (t >= a) & (t < b - bar / 2)
+            y[mm] += 0.25 * rng.standard_normal(mm.sum()) * ((t[mm] - a) / (b - a)) ** 2
+        if name == "drop":
+            y[m] += 0.35 * np.sin(2 * np.pi * 55 * t[m])
+        pos = b
+    y = (y / np.abs(y).max()).astype(np.float32)
+    out = tmp_path_factory.mktemp("edm") / "edm.mp3"
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "f32le", "-ar", str(sr),
+                    "-ac", "1", "-i", "-", str(out)], input=y.tobytes(), check=True)
+    return out

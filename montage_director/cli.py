@@ -60,6 +60,8 @@ def main(argv: list[str] | None = None) -> int:
             print("  -", note)
         plan = proj.make_plan()
         print(f"{len(plan.cuts)} cuts, {plan.duration:.1f}s, {plan.width}x{plan.height} (seed {proj.settings.seed})")
+        for w in plan.warnings:
+            print("  ! " + w)
         if a.preview:
             out = proj.render_preview(progress=show)
         else:

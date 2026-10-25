@@ -48,6 +48,7 @@ class Project:
     plan: EditPlan | None = None
     ai: AIDirector | None = None
     preview_path: Path | None = None
+    manual_drops: list[float] | None = None   # drops the user marked on the timeline
     renderer: Renderer = field(default_factory=Renderer)
     _analysed_for: tuple = ()
 
@@ -65,6 +66,7 @@ class Project:
         self.footage = analyze_footage(self.footage_paths, cancel, lambda f, m: p(0.15 + 0.85 * f, m))
         self._analysed_for = key
         self.ai = None  # new material: start a fresh AI conversation
+        self.manual_drops = None
 
     def song_range(self) -> tuple[float, float]:
         s = self.settings
@@ -74,16 +76,19 @@ class Project:
             raise ValueError("The selected part of the song must be at least 3 seconds long.")
         return start, end
 
-    def direct(self) -> Direction:
+    def direct(self, cancel=None, progress=None) -> Direction:
         s = self.settings
         start, end = self.song_range()
         if s.use_ai:
             self.ai = AIDirector(api_key=s.api_key, model=s.model)
             aspect = s.aspect if s.aspect != "auto" else "16:9 (or vertical 9:16 if the idea asks for it)"
-            self.direction = self.ai.direct(s.prompt, self.song, self.footage, start, end, aspect, s.style)
+            self.direction = self.ai.direct(s.prompt, self.song, self.footage, start, end, aspect, s.style,
+                                            cancel, progress)
         else:
             self.direction = read_prompt(s.prompt, style_direction(s.style))
             self.direction.summary = ""
+        if self.manual_drops is not None:  # the user's own drop marks win
+            self.direction.drops = list(self.manual_drops)
         return self.direction
 
     def refine(self, request: str) -> Direction:
@@ -91,6 +96,8 @@ class Project:
             raise ValueError("Make an edit first.")
         if self.settings.use_ai and self.ai is not None:
             self.direction = self.ai.refine(request)
+            if self.manual_drops is not None:
+                self.direction.drops = list(self.manual_drops)
         else:
             # Free mode: the refinement is read as extra keywords on top of the current edit.
             self.direction = read_prompt(request, self.direction)

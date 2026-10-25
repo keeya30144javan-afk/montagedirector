@@ -78,3 +78,50 @@ def test_render_is_frame_exact_with_music(analysed, tmp_path):
     log = subprocess.run([ffmpeg_exe(), "-i", str(out), "-map", "0:v", "-f", "null", "-"],
                          capture_output=True, text=True).stderr
     assert int(re.findall(r"frame=\s*(\d+)", log)[-1]) == plan.frames
+
+
+def test_no_scene_repeats_until_the_footage_runs_out(analysed):
+    song, footage = analysed
+    plan = make_plan(song, footage, read_prompt("no repeats, fast", style_direction("hype")),
+                     OutputSettings(fps=24, seed=5))
+    # A freeze frame that just holds the end of the previous cut is a continuation, not a new pick.
+    picks = [c for i, c in enumerate(plan.cuts) if not (c.freeze and i and plan.cuts[i - 1].shot == c.shot)]
+    groups = [footage.shots[c.shot].group for c in picks]
+    n_scenes = len({s.group for s in footage.usable_shots()})
+    first_repeat = next((i for i, g in enumerate(groups) if g in groups[:i]), len(groups))
+    assert first_repeat >= min(n_scenes, len(groups))
+    assert all(a != b for a, b in zip(groups, groups[1:])), "a scene played back to back"
+    if len(groups) > n_scenes:
+        assert plan.warnings, "the user should be told the footage is too short"
+
+
+def test_timed_instruction_starts_a_fast_section_on_the_beat(analysed):
+    song, footage = analysed
+    d = read_prompt("at 0:12 quick edits of fighting", style_direction("clean"))
+    assert [(s.start, s.cut_every, s.energy) for s in d.sections] == [(12.0, 0.5, 1.0)]
+    assert d.style.cut_every == STYLES["clean"].cut_every, "a timed sentence must not change the whole edit"
+    plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=6))
+    starts = [c.f0 / 24 for c in plan.cuts]
+    assert min(abs(t - 12.0) for t in starts) <= 60 / song.tempo * 0.6
+    inside = [c for c in plan.cuts if 12.0 <= c.f0 / 24 < 18.0]
+    outside = [c for c in plan.cuts if 2.0 <= c.f0 / 24 < 8.0]
+    avg = lambda cs: sum(c.frames for c in cs) / max(1, len(cs))
+    assert avg(inside) < avg(outside)
+
+
+def test_user_drop_position_wins(analysed):
+    song, footage = analysed
+    d = read_prompt("the drop is at 0:14", style_direction("hype"))
+    assert d.drops == [14.0]
+    plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=7))
+    at = [c for c in plan.cuts if abs(c.f0 / 24 - 14.0) < 0.3]
+    assert at and any(e.kind in ("flash", "fade_white") for c in at for e in c.effects)
+
+
+def test_drops_land_on_the_right_beat(edm_song):
+    song = analyze_song(edm_song)
+    beat = 60 / 128
+    assert len(song.drops) == 2, song.drops
+    for found, true in zip(song.drops, [30.0, 90.0]):
+        assert abs(found - true) < beat / 2, (found, true)
+    assert song.section_at(30.5).label == "drop" and song.section_at(90.5).label == "drop"

@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QGridLayout, QHBoxLayout, QListWidget,
-                               QListWidgetItem, QPushButton, QSizePolicy, QWidget)
+                               QListWidgetItem, QMenu, QPushButton, QSizePolicy, QWidget)
 
 from ..direction import STYLES
 from . import theme
@@ -157,6 +157,7 @@ class Timeline(QWidget):
     """Song energy coloured by section, with cuts, flashes, drops and a playhead."""
 
     seek = Signal(float)  # seconds into the edit
+    drops_changed = Signal(list)  # song seconds, after the user adds or removes a drop
 
     def __init__(self):
         super().__init__()
@@ -167,8 +168,49 @@ class Timeline(QWidget):
         self.start = 0.0
         self.end = 1.0
         self.position = 0.0
+        self.drops: list[float] | None = None  # None = the song analysis' drops
         self.setMouseTracking(True)
-        self.setToolTip("Click to jump to that moment")
+        self.setToolTip("Click to jump there. Right-click to mark or remove a beat drop.")
+
+    def current_drops(self) -> list[float]:
+        if self.drops is not None:
+            return list(self.drops)
+        return list(self.song.drops) if self.song else []
+
+    def set_drops(self, drops: list[float] | None) -> None:
+        self.drops = None if drops is None else sorted(drops)
+        self.update()
+
+    def _song_time(self, x: float) -> float:
+        frac = min(1.0, max(0.0, x / max(1, self.width())))
+        return self.start + frac * (self.end - self.start)
+
+    def contextMenuEvent(self, e):
+        if not self.song:
+            return
+        t = self._song_time(e.pos().x())
+        beats = self.song.beats
+        if beats:  # drops land on a beat
+            t = min(beats, key=lambda b: abs(b - t))
+        drops = self.current_drops()
+        near = [d for d in drops if abs(self._x(d, self.width()) - e.pos().x()) < 8]
+        menu = QMenu(self)
+        add = menu.addAction(f"Mark the drop here ({int(t // 60)}:{t % 60:04.1f})")
+        rem = menu.addAction("Remove this drop") if near else None
+        reset = menu.addAction("Use the detected drops again") if self.drops is not None else None
+        chosen = menu.exec(e.globalPos())
+        if chosen is None:
+            return
+        if chosen is add:
+            drops = sorted(set(drops + [round(t, 3)]))
+        elif chosen is rem:
+            drops = [d for d in drops if d not in near]
+        elif chosen is reset:
+            self.set_drops(None)
+            self.drops_changed.emit([])
+            return
+        self.set_drops(drops)
+        self.drops_changed.emit(drops)
 
     def set_song(self, song, start: float = 0.0, end: float | None = None) -> None:
         self.song = song
@@ -253,7 +295,7 @@ class Timeline(QWidget):
                         p.fillRect(QRectF(x - 1, top, 2, 8), QColor("white"))
         # Drops
         p.setPen(QPen(QColor(theme.HOT), 2))
-        for d in song.drops:
+        for d in self.current_drops():
             if self.start <= d <= self.end:
                 x = self._x(d, w)
                 p.drawLine(QPointF(x, top), QPointF(x, top + wave_h))

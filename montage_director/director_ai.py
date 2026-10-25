@@ -1,5 +1,12 @@
-"""AI Director: Claude watches the footage (as thumbnail sheets), reads the song
-map and the user's prompt, and returns a structured edit Direction.
+"""AI Director: Claude watches the footage, reads the song map and the user's
+prompt, and returns a structured edit Direction.
+
+Two steps:
+1. Describe the footage (once per video, cached): Claude looks at a 3-frame
+   strip of every shot (start, peak action, end) and writes a short
+   description: who is on screen and what is happening.
+2. Direct: with those descriptions, a contact sheet, the song map and the
+   user's idea, Claude plans sections, shot order, effects and timed moments.
 
 The user supplies their own Anthropic API key. Each request's cost is
 computed from the response's token usage and shown in the app.
@@ -12,15 +19,19 @@ import copy
 import io
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from .direction import (CUT_CHOICES, EFFECTS, MOMENT_ACTIONS, STYLES, Direction, Moment,
                         SectionDirection)
+from .ffmpeg_tools import check_cancel
 from .footage import Footage, Shot
 from .music import SongMap
+from .paths import cache_dir, file_key
 from .plan import Look
 
 log = logging.getLogger(__name__)
@@ -32,9 +43,13 @@ MODELS = {
     "claude-haiku-5-5": ("Claude Haiku 5.5 (cheapest)", 0.10, 0.50, False),
 }
 DEFAULT_MODEL = "claude-opus-5-5"
-MAX_SHOTS = 160
+MAX_SHEET_SHOTS = 200      # shots shown as pictures in the directing request
+MAX_TABLE_SHOTS = 900      # shots listed (with descriptions) in the directing request
 TILE_W, TILE_H, COLS, ROWS = 192, 108, 8, 5
+STRIP_W, STRIP_H, STRIP_COLS, STRIP_ROWS = 384, 72, 4, 10
 GRADES = ["none", "y2k", "sad", "cinematic", "vhs", "mono", "dream"]
+SHOT_KINDS = ["action", "character", "scenery", "dialogue", "text_or_ui", "other"]
+TAG_VERSION = 1
 
 
 class AIDirectorError(Exception):
@@ -42,11 +57,19 @@ class AIDirectorError(Exception):
 
 
 # --------------------------------------------------------------------------- #
-# Output schema (structured outputs guarantee the reply matches it)
+# Output schemas (structured outputs guarantee the reply matches them)
 # --------------------------------------------------------------------------- #
 def _obj(props: dict) -> dict:
     return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
 
+
+TAG_SCHEMA = _obj({
+    "shots": {"type": "array", "items": _obj({
+        "id": {"type": "integer"},
+        "desc": {"type": "string", "description": "at most 14 words: who is on screen, what they do, mood"},
+        "kind": {"type": "string", "enum": SHOT_KINDS},
+    })},
+})
 
 EDIT_SCHEMA = _obj({
     "summary": {"type": "string", "description": "Two or three sentences for the user: what this edit does and why."},
@@ -58,13 +81,17 @@ EDIT_SCHEMA = _obj({
         "letterbox": {"type": "boolean"},
         "grain": {"type": "number", "description": "0 to 1"},
     }),
+    "repeats": {"type": "string", "enum": ["never", "rarely", "allowed"],
+                "description": "whether a scene may appear twice; 'rarely' unless the user says otherwise"},
+    "drops": {"type": "array", "items": {"type": "number"},
+              "description": "song seconds where the beat drops: copy the song map's drops unless the user corrects them"},
     "sections": {"type": "array", "items": _obj({
         "start": {"type": "number", "description": "song seconds"},
         "end": {"type": "number", "description": "song seconds"},
         "cut_every_beats": {"type": "number", "description": "one of 0.5, 1, 2, 4, 8"},
-        "intensity": {"type": "number", "description": "0 calm to 1 wild: how much motion the chosen shots should have"},
+        "intensity": {"type": "number", "description": "0 calm to 1 wild: how much motion extra shots should have"},
         "shots": {"type": "array", "items": {"type": "integer"},
-                  "description": "shot ids to use in this section, in playback order"},
+                  "description": "shot ids for this section, in playback order, each used once"},
         "effects": _obj({k: {"type": "number", "description": "0 to 1"} for k in EFFECTS}),
         "note": {"type": "string", "description": "one short line about the idea for this section"},
     })},
@@ -74,53 +101,68 @@ EDIT_SCHEMA = _obj({
         "duration": {"type": "number", "description": "seconds; 0 for instant effects"},
     })},
     "avoid_shots": {"type": "array", "items": {"type": "integer"},
-                    "description": "shots that should never appear (menus, loading screens, credits, off-topic)"},
+                    "description": "shots that should never appear (menus, loading screens, title cards, off-topic)"},
 })
+
+TAG_PROMPT = """You are logging footage for a video editor. Each labelled strip shows three frames from one shot: its start, its moment of most action, and its end.
+
+For every shot id, write a short description an editor can search: who is on screen (use the character's name when you recognise them, otherwise describe them), what is happening (for example: throwing punches, kicking, firing an energy blast, powering up, flying, falling, explosion, crying, talking, walking, close-up stare, landscape), and the mood. Then give its kind:
+- action: fighting, attacks, chases, explosions, big movement
+- character: a character in focus without much action (stares, reactions, power-ups that are mostly posing)
+- scenery: places, sky, establishing shots
+- dialogue: talking scenes
+- text_or_ui: title cards, captions, numbers, logos, narrator overlays, menus, subscribe screens, credits
+- other
+
+Describe every shot id you are given, exactly once."""
 
 SYSTEM_PROMPT = """You are the director of a music video edit: an AMV (anime music video), GMV (game music video) or montage in the style of classic 2000s and early-2010s YouTube edits.
 
 You are given:
 - the user's idea for the edit,
 - a map of the song: tempo, sections with relative energy, drops and the biggest hits (all times in song seconds),
-- contact sheets of the footage: every tile is one shot, labelled with its shot id,
-- a table with each shot's length, motion (0 = still, 1 = most motion in this footage) and brightness.
+- a table of the footage's shots with a description of each (who is on screen and what happens), its length, motion (0 = still, 1 = most motion in this footage) and its scene number,
+- contact sheets showing a frame of many shots, labelled with shot ids.
 
-Your job is to decide what the edit should feel like and which footage goes where, so the result matches what the user has in their head. Look closely at the contact sheets: pick shots by what they show (characters, fights, scenery, emotion, colour), not only by their numbers.
+Your job is to decide what the edit should feel like and which footage goes where, so the result matches what the user has in their head. Choose shots by what they show: use the descriptions to find specific characters and actions, and the contact sheets for look and colour.
+
+Follow the user's instructions literally, especially timed ones. Times the user writes as m:ss (like 1:34) are song times: 1:34 means 94 seconds into the song. "At 1:34 quick edits of X" means: a section that starts at exactly 94.0, cuts fast (cut_every_beats 0.5 or 1) and lists only shots that show X, in an order that builds. If the user doesn't say how long, run it to the next natural change in the song (a section boundary, a drop, or about 8 seconds). If the footage has no shot matching what they asked for, use the closest match and say so in the summary.
 
 How your plan is used:
-- A planner places every cut exactly on the beat for you. You choose how many beats each cut lasts per section (cut_every_beats: 0.5 = double-time, 1 = every beat, 2, 4, or 8 = long held shots).
-- In each section, list the shots to use, in playback order. List more shots than the section has cuts if you can; they are used in order and the list repeats if it runs out. Prefer variety: avoid using the same shot back to back.
-- "intensity" steers the planner when it needs extra shots: 0 picks calm footage, 1 picks the wildest.
-- Effects (0 to 1) set how often each effect appears in that section: flash (white flash on hits), zoom (zoom punch on downbeats), shake (camera shake), rgb (RGB split glitch), slowmo (slow motion clips), reverse (reversed clips), invert (negative strobe). Use them with taste: big effects belong on drops and big hits.
-- Moments are precise events at a song time: freeze (hold a frame), flash, zoom, shake, rgb, invert, slowmo, reverse, fade_white, fade_black, or cut (force a cut). Use them for the beats the user mentions and for signature moments such as the first drop.
-- Sections must cover the whole requested range without gaps, in order. Align them with the song map's sections unless the user's idea calls for different splits.
-- The style is a base recipe that your sections override; the look is applied to the whole video.
+- A planner places every cut exactly on the beat. You choose how many beats each cut lasts per section (cut_every_beats: 0.5 = double-time, 1 = every beat, 2, 4, or 8 = long held shots).
+- In each section, list the shots to use in playback order. Each listed shot is used at most once. When a section needs more cuts than you listed, the planner fills them with unused shots that match the section's intensity, so list enough shots for fast sections (roughly one per cut).
+- Shots with the same scene number are the same moment (pieces of one take, or the same clip shown twice in a compilation). Using two of them reads as a repeat: pick one per scene unless the user wants repeats.
+- repeats: "never" if the user doesn't want any scene twice, "allowed" only if they ask for repeats or callbacks, otherwise "rarely".
+- drops: the song seconds where the beat drops. Copy the song map's drops unless the user tells you where a drop is.
+- Effects (0 to 1) set how often each effect appears in a section: flash (white flash on hits), zoom (zoom punch on downbeats), shake (camera shake), rgb (RGB split glitch), slowmo (slow motion clips), reverse (reversed clips), invert (negative strobe). Big effects belong on drops and big hits.
+- Moments are precise events at a song time: freeze (hold a frame), flash, zoom, shake, rgb, invert, slowmo, reverse, fade_white, fade_black, or cut (force a cut).
+- Sections must cover the whole requested range without gaps, in order.
+- avoid_shots: list every title card, caption-only, logo, menu or other text screen, plus anything off-topic for this edit.
+- The style is a base recipe your sections override; the look applies to the whole video.
 
-Write the summary for the user in plain words: what the edit does, and anything in their request you could not do (for example a scene that is not in the footage)."""
+Write the summary for the user in plain words: what the edit does, and anything in their request you could not do."""
 
 
 # --------------------------------------------------------------------------- #
-# Request building
+# Pictures for the model
 # --------------------------------------------------------------------------- #
-def select_shots(footage: Footage, limit: int = MAX_SHOTS) -> list[Shot]:
-    shots = footage.usable_shots()
-    if len(shots) <= limit:
-        return shots
-    # Keep an even spread across the footage plus the most energetic moments.
-    idx = set(np.linspace(0, len(shots) - 1, int(limit * 0.75)).round().astype(int).tolist())
-    by_motion = sorted(range(len(shots)), key=lambda i: -shots[i].motion)
-    for i in by_motion:
-        if len(idx) >= limit:
-            break
-        idx.add(i)
-    return [shots[i] for i in sorted(idx)]
-
-
 def _font(size: int):
     try:
         return ImageFont.load_default(size=size)
     except TypeError:  # Pillow < 10.1
         return ImageFont.load_default()
+
+
+def _label(draw, x, y, text, font):
+    box = draw.textbbox((0, 0), text, font=font)
+    draw.rectangle([x, y, x + 8 + box[2] - box[0], y + 6 + box[3] - box[1]], fill=(0, 0, 0))
+    draw.text((x + 4, y), text, fill=(255, 235, 60), font=font)
+
+
+def _jpeg(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=80)
+    return buf.getvalue()
 
 
 def contact_sheets(shots: list[Shot]) -> list[bytes]:
@@ -136,29 +178,78 @@ def contact_sheets(shots: list[Shot]) -> list[bytes]:
         for i, s in enumerate(chunk):
             x, y = (i % COLS) * TILE_W, (i // COLS) * TILE_H
             try:
-                tile = Image.open(s.thumb).convert("RGB").resize((TILE_W - 4, TILE_H - 4))
-                sheet.paste(tile, (x + 2, y + 2))
+                sheet.paste(Image.open(s.thumb).convert("RGB").resize((TILE_W - 4, TILE_H - 4)), (x + 2, y + 2))
             except OSError:
                 pass
-            label = f"#{s.id}"
-            box = draw.textbbox((0, 0), label, font=font)
-            draw.rectangle([x + 2, y + 2, x + 10 + box[2] - box[0], y + 8 + box[3] - box[1]], fill=(0, 0, 0))
-            draw.text((x + 6, y + 2), label, fill=(255, 235, 60), font=font)
-        buf = io.BytesIO()
-        sheet.save(buf, "JPEG", quality=80)
-        sheets.append(buf.getvalue())
+            _label(draw, x + 2, y + 2, f"#{s.id}", font)
+        sheets.append(_jpeg(sheet))
     return sheets
 
 
-def shot_table(footage: Footage, shots: list[Shot]) -> str:
-    lines = ["id | video | at (s) | length (s) | motion | brightness | note"]
+def strip_sheets(shots: list[Shot]) -> list[bytes]:
+    """Sheets of 3-frame strips (start, peak, end), STRIP_COLS x STRIP_ROWS, labelled with shot ids."""
+    per = STRIP_COLS * STRIP_ROWS
+    font = _font(18)
+    sheets = []
+    for start in range(0, len(shots), per):
+        chunk = shots[start:start + per]
+        rows = (len(chunk) + STRIP_COLS - 1) // STRIP_COLS
+        cell_h = STRIP_H + 4
+        sheet = Image.new("RGB", (STRIP_COLS * STRIP_W, rows * cell_h), (20, 20, 24))
+        draw = ImageDraw.Draw(sheet)
+        for i, s in enumerate(chunk):
+            x, y = (i % STRIP_COLS) * STRIP_W, (i // STRIP_COLS) * cell_h
+            src = s.strip or s.thumb
+            try:
+                sheet.paste(Image.open(src).convert("RGB").resize((STRIP_W - 4, STRIP_H)), (x + 2, y + 2))
+            except OSError:
+                pass
+            _label(draw, x + 2, y + 2, f"#{s.id}", font)
+        sheets.append(_jpeg(sheet))
+    return sheets
+
+
+def _image_block(data: bytes) -> dict:
+    return {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                        "data": base64.standard_b64encode(data).decode("ascii")}}
+
+
+def select_shots(footage: Footage, limit: int, ids: set[int] | None = None) -> list[Shot]:
+    """Up to `limit` shots, one per scene first, spread across the footage."""
+    shots = [s for s in footage.usable_shots() if ids is None or s.id in ids]
+    if len(shots) <= limit:
+        return shots
+    best: dict[int, Shot] = {}
+    for s in shots:  # the most active piece represents each scene
+        if s.group not in best or s.motion > best[s.group].motion:
+            best[s.group] = s
+    picked = sorted(best.values(), key=lambda s: s.id)
+    if len(picked) > limit:
+        idx = np.linspace(0, len(picked) - 1, limit).round().astype(int)
+        picked = [picked[i] for i in sorted(set(idx.tolist()))]
+    else:
+        rest = [s for s in shots if s not in picked]
+        idx = np.linspace(0, len(rest) - 1, max(0, limit - len(picked))).round().astype(int) if rest else []
+        picked = sorted(picked + [rest[i] for i in sorted(set(int(i) for i in idx))], key=lambda s: s.id)
+    return picked
+
+
+def shot_table(shots: list[Shot], tags: dict[int, dict]) -> str:
+    lines = ["id | scene | video | at (s) | length (s) | motion | description"]
     for s in shots:
-        note = "still" if s.static else ""
-        lines.append(f"{s.id} | {s.source + 1} | {s.start:.1f} | {s.duration:.1f} | {s.motion:.2f} | "
-                     f"{s.brightness:.2f} | {note}")
+        tag = tags.get(s.id, {})
+        desc = tag.get("desc", "")
+        if tag.get("kind") == "text_or_ui":
+            desc = "[TEXT/UI] " + desc
+        if s.static and not desc:
+            desc = "still image"
+        lines.append(f"{s.id} | {s.group} | {s.source + 1} | {s.start:.1f} | {s.duration:.1f} | {s.motion:.2f} | {desc}")
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- #
+# Requests
+# --------------------------------------------------------------------------- #
 @dataclass
 class Usage:
     input_tokens: int = 0
@@ -192,6 +283,7 @@ class AIDirector:
     client: object = None             # injectable for tests
     messages: list = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
+    tags: dict[int, dict] = field(default_factory=dict)
     last_raw: dict | None = None
 
     def _client(self):
@@ -203,48 +295,15 @@ class AIDirector:
             self.client = anthropic.Anthropic(api_key=self.api_key, max_retries=3, timeout=600)
         return self.client
 
-    def direct(self, prompt: str, song: SongMap, footage: Footage, song_start: float, song_end: float,
-               aspect: str, base_style: str) -> Direction:
-        shots = select_shots(footage)
-        content: list[dict] = []
-        sheets = contact_sheets(shots)
-        for i, sheet in enumerate(sheets):
-            content.append({"type": "text", "text": f"Contact sheet {i + 1} of {len(sheets)}:"})
-            content.append({"type": "image", "source": {
-                "type": "base64", "media_type": "image/jpeg",
-                "data": base64.standard_b64encode(sheet).decode("ascii")}})
-        videos = "\n".join(f"video {i + 1}: {src.path.replace(chr(92), '/').rsplit('/', 1)[-1]} "
-                           f"({src.duration / 60:.1f} min)" for i, src in enumerate(footage.sources))
-        content.append({"type": "text", "text": (
-            f"FOOTAGE\n{videos}\n\nSHOTS\n{shot_table(footage, shots)}\n\n"
-            f"SONG MAP\n{json.dumps(song.to_prompt_dict(song_start, song_end))}\n\n"
-            f"OUTPUT\naspect {aspect}; edit runs from song second {song_start:.2f} to {song_end:.2f}\n"
-            f"Base style the user selected: {base_style} ({STYLES[base_style].description})\n"
-            "Available styles: " + "; ".join(f"{s.id}: {s.description}" for s in STYLES.values())),
-            # Everything up to here is identical on refine requests: cache it.
-            "cache_control": {"type": "ephemeral"}})
-        content.append({"type": "text", "text": "THE USER'S IDEA\n" + (prompt.strip() or
-                        "(no prompt: make the best edit you can for this song and footage)")})
-        self.messages = [{"role": "user", "content": content}]
-        self._song, self._footage, self._range = song, footage, (song_start, song_end)
-        return self._ask()
-
-    def refine(self, request: str) -> Direction:
-        if not self.messages:
-            raise AIDirectorError("Make an edit first, then refine it.")
-        self.messages.append({"role": "user", "content": (
-            "Change request from the user: " + request.strip() +
-            "\nReturn the complete updated plan. Keep everything they did not ask to change.")})
-        return self._ask()
-
-    def _ask(self) -> Direction:
+    def _call(self, system: str, messages: list, schema: dict, effort: str, max_tokens: int):
+        """One structured request. Returns (parsed JSON, message). Raises AIDirectorError."""
         import anthropic
 
         client = self._client()
         kwargs = dict(
-            model=self.model, max_tokens=32000, system=SYSTEM_PROMPT, messages=self.messages,
+            model=self.model, max_tokens=max_tokens, system=system, messages=messages,
             thinking={"type": "adaptive"},
-            output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": EDIT_SCHEMA}},
+            output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
         )
         if MODELS.get(self.model, MODELS[DEFAULT_MODEL])[3]:
             kwargs.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
@@ -277,24 +336,135 @@ class AIDirector:
             raise AIDirectorError("Couldn't reach the AI service. Check your internet connection.") from None
 
         cost = self.usage.add(message.usage, self.model)
-        log.info("AI Director: %s in / %s out tokens, $%.3f", message.usage.input_tokens,
+        log.info("AI request: %s in / %s out tokens, $%.3f", message.usage.input_tokens,
                  message.usage.output_tokens, cost)
         if message.stop_reason == "refusal":
-            self.messages.pop()
             raise AIDirectorError("The AI declined this request. Try rewording your idea.")
         if message.stop_reason == "max_tokens":
-            self.messages.pop()
-            raise AIDirectorError("The AI's plan was cut off. Try a shorter part of the song.")
+            raise AIDirectorError("The AI's answer was cut off. Try a shorter part of the song.")
         text = next((b.text for b in message.content if b.type == "text"), "")
         try:
-            raw = json.loads(text)
+            return json.loads(text), message
         except ValueError:
-            self.messages.pop()
-            raise AIDirectorError("The AI returned an unreadable plan. Try again.") from None
+            raise AIDirectorError("The AI returned an unreadable answer. Try again.") from None
+
+    # ----- step 1: describe the footage (cached per video) ------------------- #
+    def describe_footage(self, footage: Footage, cancel=None, progress=None) -> dict[int, dict]:
+        by_source: dict[int, list[Shot]] = {}
+        for s in footage.shots:
+            by_source.setdefault(s.source, []).append(s)
+        tags: dict[int, dict] = {}
+        todo: list[Shot] = []
+        cache_files = {}
+        for src_i, shots in by_source.items():
+            path = Path(footage.sources[src_i].path)
+            cf = cache_dir() / "tags" / f"{file_key(path, TAG_VERSION, len(shots))}.json"
+            cache_files[src_i] = cf
+            cached = {}
+            if cf.is_file():
+                try:
+                    cached = {int(k): v for k, v in json.loads(cf.read_text(encoding="utf-8")).items()}
+                except (OSError, ValueError):
+                    cached = {}
+            for local, s in enumerate(shots):
+                if local in cached:
+                    tags[s.id] = cached[local]
+                elif s.usable:
+                    todo.append(s)
+        if not todo:
+            self.tags = tags
+            return tags
+
+        per_request = STRIP_COLS * STRIP_ROWS * 4   # four sheets per request
+        batches = [todo[i:i + per_request] for i in range(0, len(todo), per_request)]
+        done = {"n": 0}
+
+        def run(batch: list[Shot]) -> dict:
+            check_cancel(cancel)
+            content: list[dict] = []
+            for sheet in strip_sheets(batch):
+                content.append(_image_block(sheet))
+            content.append({"type": "text", "text": "Shot ids to describe: " + ", ".join(str(s.id) for s in batch)})
+            raw, _ = self._call(TAG_PROMPT, [{"role": "user", "content": content}], TAG_SCHEMA, "low", 32000)
+            done["n"] += len(batch)
+            if progress:
+                progress(done["n"] / len(todo), f"AI is watching your footage ({done['n']}/{len(todo)} shots)")
+            wanted = {s.id for s in batch}
+            return {int(t["id"]): {"desc": str(t.get("desc", ""))[:160], "kind": t.get("kind", "other")}
+                    for t in raw.get("shots", []) if int(t.get("id", -1)) in wanted}
+
+        if progress:
+            progress(0.0, f"AI is watching your footage (0/{len(todo)} shots, once per video)")
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            for result in pool.map(run, batches):
+                tags.update(result)
+
+        # Save per video so the next edit with the same footage skips this step.
+        for src_i, shots in by_source.items():
+            data = {local: tags[s.id] for local, s in enumerate(shots) if s.id in tags}
+            try:
+                cache_files[src_i].parent.mkdir(parents=True, exist_ok=True)
+                cache_files[src_i].write_text(json.dumps(data), encoding="utf-8")
+            except OSError as exc:
+                log.warning("Could not cache shot descriptions: %s", exc)
+        self.tags = tags
+        return tags
+
+    # ----- step 2: direct ----------------------------------------------------- #
+    def direct(self, prompt: str, song: SongMap, footage: Footage, song_start: float, song_end: float,
+               aspect: str, base_style: str, cancel=None, progress=None) -> Direction:
+        self.describe_footage(footage, cancel, (lambda f, m: progress(0.8 * f, m)) if progress else None)
+        check_cancel(cancel)
+        if progress:
+            progress(0.85, "Directing the edit with Claude...")
+        table_shots = select_shots(footage, MAX_TABLE_SHOTS)
+        sheet_shots = select_shots(footage, MAX_SHEET_SHOTS,
+                                   {s.id for s in table_shots
+                                    if self.tags.get(s.id, {}).get("kind") != "text_or_ui"})
+        content: list[dict] = []
+        sheets = contact_sheets(sheet_shots)
+        for i, sheet in enumerate(sheets):
+            content.append({"type": "text", "text": f"Contact sheet {i + 1} of {len(sheets)}:"})
+            content.append(_image_block(sheet))
+        videos = "\n".join(f"video {i + 1}: {src.path.replace(chr(92), '/').rsplit('/', 1)[-1]} "
+                           f"({src.duration / 60:.1f} min)" for i, src in enumerate(footage.sources))
+        content.append({"type": "text", "text": (
+            f"FOOTAGE\n{videos}\n\nSHOTS\n{shot_table(table_shots, self.tags)}\n\n"
+            f"SONG MAP\n{json.dumps(song.to_prompt_dict(song_start, song_end))}\n\n"
+            f"OUTPUT\naspect {aspect}; edit runs from song second {song_start:.2f} to {song_end:.2f} "
+            f"({_mmss(song_start)} to {_mmss(song_end)})\n"
+            f"Base style the user selected: {base_style} ({STYLES[base_style].description})\n"
+            "Available styles: " + "; ".join(f"{s.id}: {s.description}" for s in STYLES.values())),
+            # Everything up to here is identical on refine requests: cache it.
+            "cache_control": {"type": "ephemeral"}})
+        content.append({"type": "text", "text": "THE USER'S IDEA\n" + (prompt.strip() or
+                        "(no prompt: make the best edit you can for this song and footage)")})
+        self.messages = [{"role": "user", "content": content}]
+        self._song, self._footage, self._range = song, footage, (song_start, song_end)
+        return self._ask()
+
+    def refine(self, request: str) -> Direction:
+        if not self.messages:
+            raise AIDirectorError("Make an edit first, then refine it.")
+        self.messages.append({"role": "user", "content": (
+            "Change request from the user: " + request.strip() +
+            "\nReturn the complete updated plan. Keep everything they did not ask to change.")})
+        return self._ask()
+
+    def _ask(self) -> Direction:
+        try:
+            raw, message = self._call(SYSTEM_PROMPT, self.messages, EDIT_SCHEMA, self.effort, 64000)
+        except AIDirectorError:
+            if self.messages and self.messages[-1]["role"] == "user" and len(self.messages) > 1:
+                self.messages.pop()  # drop the failed change request so the next one starts clean
+            raise
         # Keep the full reply (thinking blocks included) so refine turns build on it.
         self.messages.append({"role": "assistant", "content": message.content})
         self.last_raw = raw
-        return to_direction(raw, self._footage, *self._range)
+        d = to_direction(raw, self._footage, *self._range)
+        ui = [sid for sid, t in self.tags.items() if t.get("kind") == "text_or_ui"]
+        d.avoid_shots = sorted(set(d.avoid_shots) | set(ui))
+        return d
 
 
 def to_direction(raw: dict, footage: Footage, start: float, end: float) -> Direction:
@@ -332,9 +502,12 @@ def to_direction(raw: dict, footage: Footage, start: float, end: float) -> Direc
                 p.end = q.start
     moments = [Moment(float(m["time"]), m["action"], float(max(0, m.get("duration", 0))))
                for m in raw.get("moments") or [] if m.get("action") in MOMENT_ACTIONS]
+    repeats = raw.get("repeats") if raw.get("repeats") in ("never", "rarely", "allowed") else "rarely"
+    drops = raw.get("drops")
+    drops = sorted({round(float(t), 3) for t in drops if 0 <= float(t)}) if isinstance(drops, list) else None
     return Direction(style=style, look=look, sections=sections, moments=moments,
                      avoid_shots=[i for i in raw.get("avoid_shots", []) if i in valid],
-                     summary=raw.get("summary", ""), notes=notes)
+                     summary=raw.get("summary", ""), notes=notes, repeats=repeats, drops=drops)
 
 
 def _mmss(t: float) -> str:

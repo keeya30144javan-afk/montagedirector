@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 SR = 22050
 HOP = 512
-MUSIC_VERSION = 4
+MUSIC_VERSION = 5
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
 
 
@@ -130,7 +130,8 @@ def analyze_song(path: str | Path, cancel=None, progress=None) -> SongMap:
 
     sections = _sections(y, sr, beat_frames, beats, downbeats, energy, energy_rate, duration, librosa)
     check_cancel(cancel)
-    drops = _drops(sections, energy, energy_rate, downbeats)
+    drops = _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa)
+    sections = _align_sections(sections, drops, energy, energy_rate, duration)
 
     if progress:
         progress(0.8, "Picking the biggest hits")
@@ -223,25 +224,106 @@ def _sections(y, sr, beat_frames, beats, downbeats, energy, energy_rate, duratio
     return sections
 
 
-def _drops(sections, energy, energy_rate, downbeats) -> list[float]:
-    """Moments where the energy jumps: the start of loud sections after quieter ones."""
-    drops = []
-    for prev, cur in zip(sections[:-1], sections[1:]):
-        if cur.label == "drop" and cur.energy - prev.energy >= 0.25:
-            drops.append(cur.start)
-    # Also catch sudden jumps inside sections (e.g. a drop the segmenter missed).
-    w = int(2 * energy_rate)
-    e = np.asarray(energy)
-    db = np.asarray(downbeats)
-    for i in range(w, len(e) - w, int(energy_rate)):
-        before, after = e[i - w:i].mean(), e[i:i + w].mean()
-        if after - before > 0.35 and after > 0.6:
-            t = i / energy_rate
-            if len(db):
-                t = float(db[np.argmin(np.abs(db - t))])
-            if all(abs(t - d) > 8 for d in drops):
-                drops.append(round(t, 3))
-    return sorted(drops)
+def _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa) -> list[float]:
+    """Find the moments the beat drops.
+
+    A drop is where the low end (kick + bass), overall loudness and hit density
+    jump up together, usually right after a riser, a cut-out or a quiet bar.
+    Every downbeat is scored by how much harder the next two bars hit than the
+    two bars before it, with a bonus for a dip just before it. The winners are
+    then moved to the exact beat where the low end slams back in.
+    """
+    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
+    rate = sr / HOP  # analysis frames per second
+
+    def norm(x, smooth_s):
+        k = max(1, int(smooth_s * rate))
+        x = np.convolve(x, np.ones(k) / k, mode="same")
+        return np.clip(x / max(np.percentile(x, 95), 1e-9), 0, 1.5)
+
+    low_raw = S[freqs < 150].sum(axis=0)
+    low = norm(low_raw, 0.25)
+    loud = norm(np.sqrt((S ** 2).mean(axis=0)), 0.25)
+    n = min(len(low), len(loud), len(onset_env))
+    density = norm(onset_env[:n], 1.0)
+    intensity = 0.45 * low[:n] + 0.35 * loud[:n] + 0.20 * density
+
+    beat = 60.0 / tempo if tempo else 0.5
+    bar = 4 * beat
+
+    def mean(a, b):
+        i, j = max(0, int(a * rate)), min(n, int(b * rate))
+        return float(intensity[i:j].mean()) if j > i else 0.0
+
+    candidates = []
+    for d in downbeats:
+        if d < 2 * bar or d > duration - 2 * bar:
+            continue
+        after = mean(d, d + 2 * bar)
+        before = mean(d - 2 * bar, d - 0.05)
+        last_beat = mean(d - beat, d - 0.05)
+        contrast = after - before
+        dip = after - last_beat
+        score = contrast + 0.35 * max(0.0, dip - contrast)
+        if after >= 0.55 and contrast >= 0.15:
+            candidates.append((score, float(d)))
+
+    # Strongest first; drops are at least ~12 s apart.
+    chosen: list[float] = []
+    for score, d in sorted(candidates, reverse=True):
+        if score < 0.2 or any(abs(d - c) < max(12.0, 4 * bar) for c in chosen):
+            continue
+        chosen.append(d)
+
+    # Land exactly where the kick/bass comes back: biggest low-end jump within
+    # half a beat, then snapped to the closest beat.
+    low_jump = np.r_[0.0, np.diff(low_raw)]
+    beats_a = np.asarray(beats)
+    refined = []
+    for d in chosen:
+        i0, i1 = max(0, int((d - beat * 0.5) * rate)), min(len(low_jump), int((d + beat * 0.5) * rate) + 1)
+        t = (i0 + int(np.argmax(low_jump[i0:i1]))) / rate if i1 > i0 else d
+        if len(beats_a):
+            t = float(beats_a[np.argmin(np.abs(beats_a - t))])
+        refined.append(round(t, 3))
+    return sorted(set(refined))
+
+
+def _align_sections(sections, drops, energy, energy_rate, duration) -> list[Section]:
+    """Make every drop start a 'drop' section so the fast cutting begins exactly on it."""
+    out = [Section(s.start, s.end, s.label, s.energy) for s in sections]
+    for d in drops:
+        i = next((k for k, s in enumerate(out) if s.start <= d < s.end), None)
+        if i is None:
+            continue
+        sec = out[i]
+        if abs(sec.start - d) < 0.05:
+            sec.label = "drop"
+            continue
+        if i > 0 and abs(sec.start - d) <= 4.0 and d > out[i - 1].start + 2.0:
+            # boundary was close: move it onto the drop
+            out[i - 1].end = d
+            sec.start = d
+            sec.label = "drop"
+            continue
+        if sec.end - d < 2.0:
+            continue
+        # split: the part from the drop onward is the drop
+        tail = energy[int(d * energy_rate):int(sec.end * energy_rate)]
+        tail_e = float(np.mean(tail)) if len(tail) else sec.energy
+        out.insert(i + 1, Section(round(d, 3), sec.end, "drop", round(max(sec.energy, min(1.0, tail_e)), 3)))
+        sec.end = round(d, 3)
+    # Tidy: drop zero-length sections, merge neighbours that are both drops.
+    tidy: list[Section] = []
+    for s in out:
+        if s.end - s.start < 0.05:
+            continue
+        if tidy and tidy[-1].label == s.label == "drop" and s.start not in drops:
+            tidy[-1].end = s.end
+        else:
+            tidy.append(s)
+    return tidy
 
 
 def _from_json(d: dict) -> SongMap:

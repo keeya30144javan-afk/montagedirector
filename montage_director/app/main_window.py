@@ -296,6 +296,7 @@ class MainWindow(QMainWindow):
 
         self.timeline = Timeline()
         self.timeline.seek.connect(self.seek_seconds)
+        self.timeline.drops_changed.connect(self.drops_changed)
         v.addWidget(self.timeline)
 
         self.summary = QLabel("")
@@ -532,7 +533,7 @@ class MainWindow(QMainWindow):
         def work(cancel, progress):
             proj.analyse(cancel, lambda f, m: progress(0.35 * f, m))
             progress(0.36, "Directing the edit with Claude..." if settings.use_ai else "Directing the edit...")
-            proj.direct()
+            proj.direct(cancel, lambda f, m: progress(0.36 + 0.06 * f, m))
             progress(0.42, "Planning cuts on the beat...")
             proj.make_plan()
             proj.render_preview(cancel, lambda f, m: progress(0.42 + 0.58 * f, m))
@@ -563,6 +564,23 @@ class MainWindow(QMainWindow):
         def work(cancel, progress):
             proj.reroll()
             proj.render_preview(cancel, progress)
+            return True
+
+        self._run("refine", work, lambda _: self._show_result())
+
+    def drops_changed(self, drops: list):
+        """The user marked or removed a drop on the timeline: re-plan around it."""
+        proj = self.project
+        if proj.plan is None or self.job is not None:
+            return
+        manual = self.timeline.drops  # None when they asked for the detected drops again
+        proj.manual_drops = manual
+        proj.direction.drops = manual if manual is not None else None
+
+        def work(cancel, progress):
+            progress(0.05, "Re-planning around the drop...")
+            proj.make_plan()
+            proj.render_preview(cancel, lambda f, m: progress(0.1 + 0.9 * f, m))
             return True
 
         self._run("refine", work, lambda _: self._show_result())
@@ -601,12 +619,15 @@ class MainWindow(QMainWindow):
                                f"{len(song.drops)} drop(s) · {_mmss(song.duration)}")
         self.timeline.set_song(song)
         self.timeline.set_plan(plan)
+        self.timeline.set_drops(proj.direction.drops if proj.direction.drops is not None else None)
         d = proj.direction
         lines = []
         if d.summary:
             lines.append(f"<b>Director:</b> {d.summary}")
         if d.notes:
             lines.append("<span style='color:%s'>%s</span>" % (theme.MUTED, " · ".join(d.notes)))
+        for w in plan.warnings:
+            lines.append(f"<span style='color:{theme.WARN}'>⚠ {w}</span>")
         cost = f" · AI cost so far: ${proj.ai.usage.cost:.2f}" if proj.ai else ""
         lines.append(f"<span style='color:{theme.MUTED}'>{len(plan.cuts)} cuts · {plan.width}×{plan.height} · "
                      f"{_mmss(plan.duration)}{cost}</span>")
