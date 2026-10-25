@@ -123,7 +123,7 @@ class SectionDirection:
     sync_hits: bool = False     # cut on the actual drum hits, not the beat grid
     fixed: bool = False         # start/end were chosen exactly (a selected region): don't move them
     camera: str | None = None   # prefer shots with this camera move: pan | zoom | shaky | still
-    occurrence: int | None = None  # which time the cue happens: 1 = first, 2 = second, -1 = last
+    occurrence: int | None = None  # which time the cue happens: 1 = first, 2 = second, -1 = last, 0 = every time
     span: str | None = None     # a stretch relative to the edit: "tail:20", "head:30", "half", "firsthalf"
     prefer: dict[str, float] = field(default_factory=dict)  # shot content: motion, bright, warm, sat, hue
     sync_on: str = "hits"       # with sync_hits: cut on "hits" (kicks + snares), "kick" or "snare"

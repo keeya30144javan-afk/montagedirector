@@ -12,7 +12,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                               QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
+                               QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider,
                                QStackedLayout, QVBoxLayout, QWidget)
 
@@ -112,6 +112,37 @@ class SettingsDialog(QDialog):
 
 TAP_KEYS = {Qt.Key_Space: "cut", Qt.Key_F: "flash", Qt.Key_Z: "zoom", Qt.Key_X: "shake", Qt.Key_D: "drop"}
 TAP_HELP = "Tapping: Space = cut · F = flash · Z = zoom · X = shake · D = drop · Backspace = undo"
+
+
+IDEAS = [
+    ("Hype fight edit", "Still shot for the intro, then when the bass drops go crazy with fight scenes and flashes "
+                        "on every snare. Build up the tension with faster and faster cuts before each drop."),
+    ("Sad / emotional", "Slow emotional edit with close-ups and faces, long shots, no flashes, slow motion on the "
+                        "chorus, black and white. End on a freeze frame."),
+    ("Phonk edit", "Phonk edit, cut on the kick, shake on every 808, dark scenes, vertical for TikTok."),
+    ("2000s AMV", "Old 2008 YouTube AMV feel with glow and ghost trails, white flash into the drop, "
+                  "zoom punches on the chorus."),
+    ("Timeline (with times)", "At the start hold one shot. At 0:45 quick cuts of punches. At 1:20 slow down. "
+                              "Around 2:00 when the solo starts slower cuts. The last 10 seconds fade to black."),
+    ("Velocity edit", "Velocity edit on the drop, slow motion on the big hits, bright explosions in the chorus."),
+]
+PROMPT_HELP = """<b>The free director understands:</b><br><br>
+<b>Pace:</b> fast, quick, crazy, hype, slow, calm, chill, "a little faster", "super slow", "not too fast",
+"back to the flow", "cut every 2 beats / every bar", "faster and faster" (a build-up), velocity edit.<br><br>
+<b>Effects, with amounts:</b> flashes, zoom punches, shake, glitch / RGB, slow motion, reverse, strobe:
+"more", "a few", "less", "no". "Keep it simple", "smooth transitions", "no effects".<br><br>
+<b>On the drums:</b> "cut on the kick", "cuts on the snare", "edits on the hits", "flash on every snare",
+"shake on every 808", "slow motion on the big hits".<br><br>
+<b>What to show:</b> fight scenes, punches, explosions, fire, power-ups, close-ups, faces, calm scenes,
+dark / bright scenes, colours (blue, red, gold...), panning shots, "hold one shot".<br><br>
+<b>Where:</b> the intro, verse, chorus, drop, bridge, outro; "the second drop", "the last chorus";
+"at 1:20", "1 minute 30", "from 0:30 to 0:45", "until 0:11", "the last 20 seconds", "halfway through";
+musical moments it hears: "when the bass drops", "when the drums get faster", "when the solo starts",
+"the hard hits", "when the vocals come in", "before the drop", "when the last note rings".<br><br>
+<b>Look and shape:</b> black and white, VHS, Y2K, film / trailer, sad, dreamy, glow, ghost trails, letterbox,
+vertical / TikTok, square; "no repeats".<br><br>
+Anything it doesn't understand is listed under the preview as <i>Didn't catch</i>. The AI Director
+understands any wording."""
 
 
 class TapFilter(QObject):
@@ -269,6 +300,20 @@ class MainWindow(QMainWindow):
         self.prompt.setPlaceholderText(PROMPT_HINT)
         self.prompt.setFixedHeight(120)
         v.addWidget(self.prompt)
+        row = QHBoxLayout()
+        ideas = QPushButton("Ideas ▾")
+        ideas.setToolTip("Example ideas to start from (added to what you've written)")
+        menu = QMenu(ideas)
+        for label, text in IDEAS:
+            act = menu.addAction(label)
+            act.triggered.connect(lambda _=False, t=text: self.add_idea(t))
+        ideas.setMenu(menu)
+        row.addWidget(ideas)
+        help_btn = QPushButton("What can I say?")
+        help_btn.clicked.connect(self.show_prompt_help)
+        row.addWidget(help_btn)
+        row.addStretch()
+        v.addLayout(row)
 
         v.addSpacing(6)
         v.addWidget(section_title("5", "DIRECTOR"))
@@ -887,6 +932,15 @@ class MainWindow(QMainWindow):
         self.load_preview(proj.preview_path)
         name = proj.path.stem if proj.path else ""
         self.setWindowTitle(f"{name} · {APP_NAME}" if name else APP_NAME)
+
+    def add_idea(self, text: str):
+        cur = self.prompt.toPlainText().strip()
+        self.prompt.setPlainText((cur + "\n" if cur else "") + text)
+
+    def show_prompt_help(self):
+        box = QMessageBox(QMessageBox.Information, "What can I say?", PROMPT_HELP, parent=self)
+        box.setTextFormat(Qt.RichText)
+        box.exec()
 
     # ----------------------------------------------------------- undo / redo
     def undo(self):

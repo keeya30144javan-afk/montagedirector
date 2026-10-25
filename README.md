@@ -18,9 +18,9 @@ The app checks for updates when it starts and offers to download new versions. Y
 3. **Style:** pick a starting point: Hype AMV/GMV, 2000s Flash Edit, Sad / Emotional, Cinematic Trailer, Glitch / VHS or Clean Beat Sync.
 4. **Your idea:** describe the edit, for example *"Slow emotional intro on the quiet scenes, then go crazy on the drop with the fight scenes and lots of flashes. Freeze frame at 1:05. Vertical for TikTok."*
 5. **Director:**
-   - **Free (on this PC):** no account needed. Understands keywords: fast, slow, calm, crazy, flashes, shake, zoom, glitch, slow mo, reverse, strobe, vertical, square, black and white, VHS, Y2K, glow, trails, letterbox, and times like "freeze at 1:05" or "flash at 0:42". You can aim words at parts of the song: "calm intro", "crazy drop".
+   - **Free (on this PC):** no account needed. Reads your idea the way an editor would: pace ("a little faster", "not too fast", "back to the flow", "every 2 beats"), effects with amounts ("a few flashes", "less shake", "no glitch"), the drums ("cut on the kick", "flash on every snare", "slow motion on the big hits"), what to show ("fight scenes", "explosions", "close-ups", "dark scenes", "blue shots"), and where ("the chorus", "the second drop", "from 0:30 to 0:45", "the last 20 seconds", "halfway through", "when the solo starts", "before each drop"). Press **Ideas** for examples and **What can I say?** for the full list. Anything it doesn't understand is shown as *Didn't catch* so you can rephrase it.
    - **AI Director:** Claude looks at your footage, reads your idea in plain English and chooses which scenes go where. Needs your own Anthropic API key (Settings, then paste the key from [console.anthropic.com](https://console.anthropic.com/settings/keys)). You pay Anthropic directly; the cost of each edit is shown in the app.
-6. Press **Make Edit**. A preview plays when it's ready. Under the timeline, **Heard:** lists what the app heard in the song (quiet intro, drums getting faster, solo, hard hits, the last note ringing out) and **Your timeline:** shows where each of your instructions landed.
+6. Press **Make Edit**. A preview plays when it's ready. Under the timeline, **Feel:** describes the song (tempo, whether it has a steady drum beat, how drum-driven it is), **Heard:** lists the moments the app heard (quiet intro, drums getting faster, solo, hard hits, the last note ringing out) and **Your timeline:** shows where each of your instructions landed. Cut lengths follow the song: very fast songs cut every other beat, songs without drums cut on phrases, and the calmer stretches of a part cut a little slower than its peaks (an exact "every beat" in your idea is always kept).
 7. Fine-tune it:
    - **Refine** the whole edit in your own words ("more flashes in the drop", "cut every 2 beats").
    - **Refine one part:** drag across the timeline to select it, type what should happen there ("quicker cuts with punches", "hold one shot", "cut on the hits"), press Refine. Right-click a green section box to undo it.
@@ -71,7 +71,7 @@ Tests: `pip install pytest` then `pytest`.
 ## Releasing a new version
 
 1. Update `__version__` in `montage_director/__init__.py`.
-2. Push a tag: `git tag v0.3.0 && git push origin v0.3.0`.
+2. Push a tag: `git tag v0.4.0 && git push origin v0.4.0`.
 3. GitHub Actions builds the Windows installer and the Mac disk image and publishes them on the Releases page. Installed copies see the update the next time they start.
 
 To build test installers without publishing, open **Actions → Build installers → Run workflow**.

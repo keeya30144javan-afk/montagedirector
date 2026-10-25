@@ -346,15 +346,23 @@ def _hits(curve: np.ndarray, rate: float, librosa, min_gap: float = 0.07,
 
 
 def describe(events: list[dict]) -> list[str]:
-    """Human-readable list of what was heard, for the app."""
-    out = []
+    """Human-readable list of what was heard, for the app (one entry per kind, in song order)."""
+    by_kind: dict[str, list[dict]] = {}
     for e in events:
         if e["kind"] == "fill":
             continue  # too many to list; they're marked on the timeline
-        label = EVENT_LABELS.get(e["kind"], e["kind"])
-        span = f"{_mmss(e['time'])}–{_mmss(e['end'])}" if e.get("end") and e["end"] - e["time"] >= 3 else _mmss(e["time"])
-        extra = f" ({len(e['times'])})" if e["kind"] == "hits" and e.get("times") else ""
-        out.append(f"{label}{extra} {span}")
+        by_kind.setdefault(e["kind"], []).append(e)
+    out = []
+    for kind, evs in sorted(by_kind.items(), key=lambda kv: kv[1][0]["time"]):
+        label = EVENT_LABELS.get(kind, kind)
+        spans = []
+        for e in evs[:5]:
+            span = f"{_mmss(e['time'])}–{_mmss(e['end'])}" if e.get("end") and e["end"] - e["time"] >= 3 else _mmss(e["time"])
+            if kind == "hits" and e.get("times"):
+                span += f" ({len(e['times'])})"
+            spans.append(span)
+        more = f" +{len(evs) - 5} more" if len(evs) > 5 else ""
+        out.append(f"{label} {', '.join(spans)}{more}")
     return out
 
 

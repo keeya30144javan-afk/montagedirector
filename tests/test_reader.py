@@ -120,3 +120,8 @@ def test_the_long_timeline_prompt():
 @pytest.mark.parametrize("prompt", ["the intro is way too long", "make it look like my cat made it"])
 def test_unclear_parts_are_reported(prompt):
     assert read(prompt).unclear == [prompt]
+
+
+def test_every_time_it_happens():
+    d = read("build up the tension with faster and faster cuts before each drop")
+    assert [(s.cue, s.occurrence, s.ramp) for s in d.sections] == [("predrop", 0, True)]

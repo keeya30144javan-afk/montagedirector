@@ -320,6 +320,17 @@ class _Planner:
 
         kept: list[SectionDirection] = []
         last_start = self.S - 1
+        expanded = []
+        for sd in self.d.sections:  # "before each drop": one section per time it happens
+            if sd.cue and sd.occurrence == 0:
+                n = len([e for e in self.cue_events(sd.cue) if self.S - 0.01 <= e[0] < self.E])
+                for k in range(1, n + 1):
+                    c = copy.deepcopy(sd)
+                    c.occurrence = k
+                    expanded.append(c)
+            else:
+                expanded.append(sd)
+        self.d.sections = expanded
         for sd in self.d.sections:
             sd.cue_end, sd.hit_times = None, None
             if sd.fixed:
@@ -352,7 +363,9 @@ class _Planner:
                         continue
                     evs = [pick]
                     sd.start = -1.0
-                if sd.start >= 0:
+                if sd.occurrence:
+                    ev = evs[0]  # named exactly ("the second drop", "before each drop")
+                elif sd.start >= 0:
                     near = [e for e in evs if abs(e[0] - sd.start) <= 6.0]
                     ev = min(near, key=lambda e: abs(e[0] - sd.start)) if near else None
                 else:

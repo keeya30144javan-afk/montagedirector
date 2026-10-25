@@ -102,7 +102,7 @@ CUES = [
                      r"|double time drums"),
     ("ringout", r"note (?:ends|rings|fades)|rings? out|\bringing\b|\brings\b|last note|end of the song|\bthe end\b"
                 r"|\bat the end\b|\bend it\b|\bend on\b|\bend with\b|\bthe very end\b"),
-    ("predrop", r"\bbefore the (?:bass |beat )?drop|\bleading (?:up )?(?:in)?to the drop|\binto the drop\b"),
+    ("predrop", r"\bbefore (?:the|each|every|a) (?:bass |beat |big )?drops?|\bleading (?:up )?(?:in)?to the drops?"),
     ("drop", r"bass (?:drops|comes in|hits|kicks in)|beat (?:drops|comes in|kicks in|hits)|\bkicks in\b"
              r"|\bthe drop hits\b|\bdrop comes in\b"),
     ("vocals", r"\b(?:vocals?|singing|singer|lyrics|voice|rapping|rap) (?:come|comes|start|starts|kick|kicks|begin|begins)"
@@ -265,7 +265,8 @@ def _split_and(piece: str) -> list[str]:
     for joiner in (r"\band\b", r"\bas soon as\b", r"\bonce\b", r"\bwhen\b", r"\bwhile\b"):
         nxt = []
         for p in out:
-            ms = [m for m in re.finditer(joiner, p)]
+            keep = [(r.start(), r.end()) for r in RAMP_RX.finditer(p)]  # "faster and faster" is one phrase
+            ms = [m for m in re.finditer(joiner, p) if not any(a <= m.start() < b for a, b in keep)]
             last = 0
             for m in ms:
                 left, right = p[last:m.start()], p[m.start():]
@@ -426,6 +427,10 @@ def read_instruction(text: str) -> Instruction:
                 ins.cue = kind
                 take(m)
                 break
+    if ins.cue and ins.occurrence is None and re.search(
+            r"\b(?:each|every|all(?: the)?|both)\s+(?:\w+\s+)?(?:drops?|chorus(?:es)?|verses?|solos?|fills?|stops?|build ?ups?)\b",
+            text):
+        ins.occurrence = 0  # every time it happens
     for m in SECTION_RX.finditer(work):
         # "the build up" is a place; "build up the tension" is an instruction (handled by RAMP)
         if m.group(0) in ("build up", "build") and re.match(r"\s+(?:up\s+)?(?:the\s+)?(?:tension|speed|pace|hype)", work[m.end():]):
@@ -1003,7 +1008,9 @@ def _where(ins: Instruction, window) -> str:
             name = {"drop": "chorus / drop", "breakdown": "bridge / breakdown"}.get(lab, lab)
         else:
             name = CUE_NAMES.get(ins.cue, ins.cue) if ins.cue != "end" else "the end"
-        if ins.occurrence:
+        if ins.occurrence == 0:
+            name = "every " + ("drop" if ins.cue == "drop" else name)
+        elif ins.occurrence:
             name = "drop" if ins.cue == "drop" else name
             name = {1: "first ", 2: "second ", 3: "third ", 4: "fourth ", -1: "last "}[ins.occurrence] + name
         parts.append(f"({name})" if ins.times else name)
