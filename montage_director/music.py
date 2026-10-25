@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 SR = 22050
 HOP = 512
-MUSIC_VERSION = 7
+MUSIC_VERSION = 8
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
 
 
@@ -115,7 +115,10 @@ def analyze_song(path: str | Path, cancel=None, progress=None) -> SongMap:
 
     if progress:
         progress(0.25, "Finding the beat")
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
+    # One spectrogram for everything (beats, sections, drops, listening).
+    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP)).astype(np.float32)
+    mel = librosa.feature.melspectrogram(S=S ** 2, sr=sr)
+    onset_env = librosa.onset.onset_strength(S=librosa.power_to_db(mel), sr=sr, hop_length=HOP)
     tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=HOP)
     tempo = float(np.atleast_1d(tempo)[0]) or 120.0
     beats = librosa.frames_to_time(beat_frames, sr=sr, hop_length=HOP)
@@ -140,16 +143,16 @@ def analyze_song(path: str | Path, cancel=None, progress=None) -> SongMap:
     lo, hi = np.percentile(energy, 3), np.percentile(energy, 98)
     energy = np.clip((energy - lo) / max(hi - lo, 1e-9), 0, 1)
 
-    sections = _sections(y, sr, beat_frames, beats, downbeats, energy, energy_rate, duration, librosa)
+    sections = _sections(y, sr, beat_frames, beats, downbeats, energy, energy_rate, duration, librosa, S, mel)
     check_cancel(cancel)
-    drops = _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa)
+    drops = _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa, S)
     sections = _align_sections(sections, drops, energy, energy_rate, duration)
     check_cancel(cancel)
     if progress:
         progress(0.6, "Listening to the drums, bass and melody")
     from .listening import listen
 
-    heard = listen(y, sr, beats, downbeats, tempo, duration, drops, librosa)
+    heard = listen(y, sr, beats, downbeats, tempo, duration, drops, librosa, S)
 
     if progress:
         progress(0.8, "Picking the biggest hits")
@@ -178,10 +181,15 @@ def analyze_song(path: str | Path, cancel=None, progress=None) -> SongMap:
     return song
 
 
-def _sections(y, sr, beat_frames, beats, downbeats, energy, energy_rate, duration, librosa) -> list[Section]:
+def _sections(y, sr, beat_frames, beats, downbeats, energy, energy_rate, duration, librosa, S=None,
+              mel=None) -> list[Section]:
     """Segment the song with agglomerative clustering on beat-synced timbre."""
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=HOP, n_mfcc=13)
-    chroma = librosa.feature.chroma_stft(y=y, sr=sr, hop_length=HOP)
+    if S is None:
+        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
+    if mel is None:
+        mel = librosa.feature.melspectrogram(S=S ** 2, sr=sr)
+    mfcc = librosa.feature.mfcc(S=librosa.power_to_db(mel), sr=sr, n_mfcc=13)
+    chroma = librosa.feature.chroma_stft(S=S ** 2, sr=sr)
     feats = np.vstack([librosa.util.normalize(mfcc, axis=1), chroma])
     sync = librosa.util.sync(feats, beat_frames, aggregate=np.median)
     k = int(np.clip(round(duration / 9.0), 4, 24))
@@ -244,7 +252,7 @@ def _sections(y, sr, beat_frames, beats, downbeats, energy, energy_rate, duratio
     return sections
 
 
-def _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa) -> list[float]:
+def _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa, S=None) -> list[float]:
     """Find the moments the beat drops.
 
     A drop is where the low end (kick + bass), overall loudness and hit density
@@ -253,7 +261,8 @@ def _detect_drops(y, sr, onset_env, beats, downbeats, tempo, duration, librosa) 
     two bars before it, with a bonus for a dip just before it. The winners are
     then moved to the exact beat where the low end slams back in.
     """
-    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
+    if S is None:
+        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
     rate = sr / HOP  # analysis frames per second
 

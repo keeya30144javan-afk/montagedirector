@@ -34,14 +34,15 @@ EVENT_LABELS = {
 }
 
 
-def listen(y, sr, beats, downbeats, tempo, duration, drops, librosa) -> dict:
+def listen(y, sr, beats, downbeats, tempo, duration, drops, librosa, S=None) -> dict:
     beats = np.asarray(beats, float)
     downbeats = np.asarray(downbeats, float)
     beat = 60.0 / tempo if tempo else 0.5
     rate = sr / HOP
 
-    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP))
-    H, P = librosa.decompose.hpss(S, margin=1.0)
+    if S is None:
+        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=HOP)).astype(np.float32)
+    H, P = fast_hpss(S)
     freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
 
     def band(M, lo, hi):
@@ -221,6 +222,43 @@ def listen(y, sr, beats, downbeats, tempo, duration, drops, librosa) -> dict:
         "hats": [round(t, 3) for t, s in hats if s >= 0.15],
         "events": events,
     }
+
+
+def fast_hpss(S: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Harmonic / percussive separation (soft masks, like librosa's hpss) about 5x faster.
+
+    Sustained sounds don't need fine timing, so the harmonic median (along time) runs on
+    4-frame blocks; drum hits don't need fine pitch, so the percussive median (along
+    frequency) runs on pairs of bins. Both filters are split into independent chunks and
+    run on all cores.
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
+    from scipy import ndimage
+
+    F, N = S.shape
+    n4 = N // 4 * 4
+    blocks = S[:, :n4].reshape(F, -1, 4).mean(axis=2)
+    if N > n4:
+        blocks = np.concatenate([blocks, S[:, n4:].mean(axis=1, keepdims=True)], axis=1)
+    f2 = F // 2 * 2
+    pairs = S[:f2].reshape(-1, 2, N).mean(axis=1)
+    workers = max(1, min(8, os.cpu_count() or 1))
+    rows = np.array_split(np.arange(blocks.shape[0]), workers)
+    cols = np.array_split(np.arange(N), workers)
+    with ThreadPoolExecutor(workers) as ex:
+        h_parts = ex.map(lambda r: ndimage.median_filter(blocks[r], size=(1, 9), mode="reflect"), rows)
+        harm = np.concatenate(list(h_parts), axis=0)
+        p_parts = ex.map(lambda c: ndimage.median_filter(pairs[:, c], size=(17, 1), mode="reflect"), cols)
+        perc = np.concatenate(list(p_parts), axis=1)
+    harm = np.repeat(harm, 4, axis=1)[:, :N]
+    perc = np.repeat(perc, 2, axis=0)
+    if F > f2:
+        perc = np.concatenate([perc, perc[-1:]], axis=0)
+    h2, p2 = harm * harm, perc * perc
+    total = h2 + p2 + 1e-12
+    return S * (h2 / total), S * (p2 / total)
 
 
 def _feel(S, H, P, freqs, kicks, snares, hats, beat, duration, stats, tempo) -> dict:
