@@ -797,6 +797,8 @@ def _apply_scoped(d: Direction, ins: Instruction, labels: list[str], notes: list
     if ins.cut_rate is not None:
         for lab in labels:
             st.cut_every[lab] = ins.cut_rate
+            if lab not in d.rate_locked:
+                d.rate_locked.append(lab)
         said.append(f"a cut every {_rate_label(ins.cut_rate)}")
     elif ins.pace is not None:
         if ins.pace == 0:

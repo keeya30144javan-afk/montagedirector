@@ -110,6 +110,8 @@ class _Planner:
             "bar": list(song.downbeats),
         }
         self.features = self._shot_features()
+        e = np.asarray(song.energy[int(self.S * song.energy_rate):int(self.E * song.energy_rate)] or [0.5])
+        self.energy_q = (float(np.percentile(e, 35)), float(np.percentile(e, 60)))
         self.resolve_sections()
         self.reserved = self._reserve_matches()
 
@@ -465,7 +467,28 @@ class _Planner:
 
     def cut_every_at(self, t: float) -> float:
         sd = self.sd_at(t)
-        base = sd.cut_every if sd and sd.cut_every else self.d.style.cut_every.get(self.label_at(t), 2.0)
+        if sd and sd.cut_every:
+            base = sd.cut_every
+        else:
+            label = self.label_at(t)
+            base = self.d.style.cut_every.get(label, 2.0)
+            if not self.d.style.pure and label not in self.d.rate_locked:
+                # styles are written for a ~120 BPM beat: keep cuts a watchable length in seconds
+                scale = self.song.feel.get("rate_scale", 1.0)
+                if scale > 1:  # "0.5" mostly means every beat plus the odd extra hit: count it as 1
+                    base = max(base, 1.0)
+                base = min(8.0, max(0.5, base * scale))
+                if self.song.feel and not self.song.feel.get("steady", True):
+                    # no drum beat to follow (piano, strings, ambient): the beat grid is a guess,
+                    # so never cut faster than about once a second
+                    base = max(base, min((c for c in CUT_CHOICES if c * self.beat >= 0.9), default=8.0))
+                # ride the song: the calmer stretches inside a part cut a step slower
+                if base <= 2.0 and not any(d - 0.1 <= t < d + 16 * self.beat for d in self.drops):
+                    local = self.song.energy_at(t - self.beat, t + 7 * self.beat)
+                    if local < self.energy_q[0]:
+                        base = _slower(base)
+                    elif local < self.energy_q[1] and base <= 0.5:
+                        base = 1.0
         ramp = self.ramp_at(t)
         if ramp:  # quicker and quicker: full length, then half, then a quarter
             a, b = ramp
@@ -1007,6 +1030,11 @@ class _Planner:
                 else:
                     self.add(cuts, f, m.action, frames, 1.0)
         return cuts
+
+
+def _slower(every: float) -> float:
+    i = CUT_CHOICES.index(every) if every in CUT_CHOICES else 1
+    return CUT_CHOICES[min(len(CUT_CHOICES) - 1, i + 1)]
 
 
 def _mmss(t: float) -> str:

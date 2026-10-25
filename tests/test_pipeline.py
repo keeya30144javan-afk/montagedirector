@@ -326,3 +326,48 @@ def test_export_presets_set_size_and_file_limit(media, tmp_path, monkeypatch):
                         ("small", project_mod.EXPORT, None, None, 0.5))  # 0.5 MB for a 6 s clip
     out = proj.export(tmp_path / "small.mp4", "discord")
     assert out.stat().st_size < 0.5 * 1024 * 1024
+
+
+def _write_song(path, bpm, seconds, drums=True):
+    import numpy as np
+    import imageio_ffmpeg
+
+    sr = 22050
+    t = np.arange(int(sr * seconds)) / sr
+    y = 0.15 * np.sin(2 * np.pi * 220 * t) * (0.6 + 0.4 * np.sin(2 * np.pi * t / 8))
+    beat = 60 / bpm
+    if drums:
+        rng = np.random.default_rng(0)
+        for i in range(int(seconds / beat)):
+            s = int(i * beat * sr)
+            n = min(int(0.12 * sr), len(t) - s)
+            tt = np.arange(n) / sr
+            if i % 2 == 0:
+                y[s:s + n] += 0.9 * np.sin(2 * np.pi * (50 + 90 * np.exp(-25 * tt)) * tt) * np.exp(-20 * tt)
+            else:
+                y[s:s + n] += 0.5 * rng.normal(0, 1, n) * np.exp(-30 * tt)
+    y = (y / np.abs(y).max()).astype(np.float32)
+    subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "f32le", "-ar", str(sr),
+                    "-ac", "1", "-i", "-", str(path)], input=y.tobytes(), check=True)
+    return path
+
+
+def test_pacing_follows_the_feel_of_the_song(media, tmp_path):
+    import copy
+
+    footage = analyze_footage([media])
+    calm = analyze_song(_write_song(tmp_path / "pad.wav", 90, 30, drums=False))
+    assert not calm.feel["steady"], calm.feel
+    base = analyze_song(media / "song.mp3")
+    fast = copy.deepcopy(base)
+    fast.feel = dict(base.feel, rate_scale=2.0, pace="fast")  # as for a song heard at 150+ BPM
+
+    def avg(song, prompt=""):
+        plan = make_plan(song, footage, read_prompt(prompt, style_direction("hype")), OutputSettings(fps=30, seed=1))
+        inner = [c.frames / 30 for c in plan.cuts[1:-1]]
+        return sum(inner) / len(inner)
+
+    assert avg(fast) > 1.4 * avg(base), "fast songs: longer cuts in beats"
+    assert avg(calm) >= 0.85, "no drum beat: never faster than about a cut a second"
+    # what the user asks for exactly is kept exactly
+    assert abs(avg(fast, "cut on every beat") - avg(base, "cut on every beat")) < 0.05

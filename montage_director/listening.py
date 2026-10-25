@@ -213,12 +213,52 @@ def listen(y, sr, beats, downbeats, tempo, duration, drops, librosa) -> dict:
             events.append({"kind": "ringout", "time": round(last_hit, 3), "end": round(duration, 3), "strength": 1.0})
 
     events.sort(key=lambda e: e["time"])
+    feel = _feel(S, H, P, freqs, kicks, snares, hats, beat, duration, stats, tempo)
     return {
+        "feel": feel,
         "kicks": [round(t, 3) for t, s in kicks if s >= 0.15],
         "snares": [round(t, 3) for t, s in snares if s >= 0.15],
         "hats": [round(t, 3) for t, s in hats if s >= 0.15],
         "events": events,
     }
+
+
+def _feel(S, H, P, freqs, kicks, snares, hats, beat, duration, stats, tempo) -> dict:
+    """The overall feel of the song, as far as it can be heard reliably:
+    how fast the beat really is for cutting, whether there is a steady drum beat at all,
+    how drum-driven and bass-heavy it is, and how much the loudness moves."""
+    power_p, power_h = float((P ** 2).sum()), float((H ** 2).sum())
+    drive = power_p / max(power_p + power_h, 1e-9)
+    low = float((S[freqs < 120] ** 2).sum() / max(float((S ** 2).sum()), 1e-9))
+    beats_total = max(1.0, duration / beat)
+    strong_kicks = sum(1 for _, s in kicks if s >= 0.35)
+    strong_drums = strong_kicks + sum(1 for _, s in snares if s >= 0.35)
+    # A steady beat: most bars have kicks or snares in them.
+    with_drums = [st for st in stats if st["kick"] + st["snare"] >= 2]
+    steady = len(with_drums) >= 0.5 * max(1, len(stats)) and strong_drums >= 0.35 * beats_total
+    energies = np.array([st["energy"] for st in stats]) if stats else np.array([0.5])
+    dyn = float(np.percentile(energies, 90) - np.percentile(energies, 10)) if len(energies) > 3 else 0.0
+    # Cut length: styles are written for a ~0.5 s beat (120 BPM). Very fast songs cut every
+    # other beat, very slow ones twice per beat; songs without drums cut on phrases.
+    scale = float(2.0 ** round(np.log2(0.5 / beat))) if beat > 0 else 1.0
+    scale = float(np.clip(scale, 0.5, 2.0))
+    if not steady:
+        scale = max(scale, 2.0)
+    pace = "fast" if beat < 0.4 else ("slow" if beat > 0.75 else "medium")
+    words = [f"{tempo:.0f} BPM ({pace})"]
+    if not steady:
+        words.append("no steady drum beat")
+    elif drive > 0.3:
+        words.append("drum-driven")
+    if low > 0.6:
+        words.append("heavy low end")
+    if dyn > 0.45:
+        words.append("big quiet/loud contrast")
+    elif dyn < 0.15:
+        words.append("even loudness")
+    return {"bpm": round(float(tempo), 1), "beat": round(float(beat), 3), "pace": pace, "steady": bool(steady),
+            "drive": round(drive, 3), "low_end": round(low, 3), "dynamics": round(dyn, 3), "rate_scale": scale,
+            "words": words}
 
 
 def _drum_hits(kick_c, snare_c, hat_c, rate, librosa):

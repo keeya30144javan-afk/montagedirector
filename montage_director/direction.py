@@ -162,6 +162,7 @@ class Direction:
     ramp: list[str] = field(default_factory=list)            # labels whose cuts speed up toward the end
     velocity: list[str] = field(default_factory=list)        # labels cut as a velocity edit
     unclear: list[str] = field(default_factory=list)         # parts of the prompt the free reader didn't get
+    rate_locked: list[str] = field(default_factory=list)     # labels whose beats-per-cut the user set exactly
 
     def section_direction(self, t: float) -> SectionDirection | None:
         for s in self.sections:

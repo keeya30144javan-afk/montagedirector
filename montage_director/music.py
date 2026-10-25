@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 SR = 22050
 HOP = 512
-MUSIC_VERSION = 6
+MUSIC_VERSION = 7
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma"}
 
 
@@ -52,6 +52,7 @@ class SongMap:
     snares: list[float] = field(default_factory=list)
     hats: list[float] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)    # what an editor cuts to (see listening.py)
+    feel: dict = field(default_factory=dict)            # overall feel: pace, steady beat, drive... (listening.py)
 
     def events_of(self, kind: str) -> list[dict]:
         return [e for e in self.events if e["kind"] == kind]
@@ -79,6 +80,9 @@ class SongMap:
             "sections": [s.to_dict() for s in self.sections if s.end > start and s.start < end],
             "drops": [round(d, 2) for d in self.drops if start <= d < end],
             "bar_starts": [round(b, 2) for b in self.downbeats if start <= b < end],
+            "feel": {k: v for k, v in self.feel.items() if k in ("pace", "steady", "drive", "low_end", "dynamics", "words")},
+            "heard_events": [{"kind": e["kind"], "time": round(e["time"], 2), "end": round(e.get("end") or e["time"], 2)}
+                             for e in self.events if e["kind"] != "fill" and start <= e["time"] < end],
             "biggest_hits": [round(t, 2) for t, _ in sorted(
                 (h for h in self.hits if start <= h[0] < end), key=lambda h: -h[1])[:24]],
         }
@@ -165,6 +169,7 @@ def analyze_song(path: str | Path, cancel=None, progress=None) -> SongMap:
         sections=sections, drops=drops, hits=hits,
         energy=[round(float(e), 3) for e in energy], energy_rate=energy_rate,
         kicks=heard["kicks"], snares=heard["snares"], hats=heard["hats"], events=heard["events"],
+        feel=heard.get("feel", {}),
     )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(asdict(song)), encoding="utf-8")

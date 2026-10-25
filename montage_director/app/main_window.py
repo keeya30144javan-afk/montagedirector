@@ -852,6 +852,9 @@ class MainWindow(QMainWindow):
         from ..listening import describe
 
         heard = describe(song.events)
+        feel = song.feel.get("words") if song.feel else None
+        if feel:
+            lines.append(f"<b>Feel:</b> <span style='color:{theme.MUTED}'>" + " · ".join(feel) + "</span>")
         if heard:
             lines.append(f"<b>Heard:</b> <span style='color:{theme.MUTED}'>" + " · ".join(heard) + "</span>")
         if plan.timeline:
