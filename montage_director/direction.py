@@ -122,6 +122,7 @@ class SectionDirection:
     still: bool = False         # ...and it should be a calm, still shot
     sync_hits: bool = False     # cut on the actual drum hits, not the beat grid
     fixed: bool = False         # start/end were chosen exactly (a selected region): don't move them
+    camera: str | None = None   # prefer shots with this camera move: pan | zoom | shaky | still
 
 
 @dataclass
@@ -488,6 +489,12 @@ def read_timeline(prompt: str, d: Direction, notes: list[str], window: tuple[flo
 
         sd = SectionDirection(start=start, end=float(times[1]) if len(times) > 1 else -1.0, cue=cue,
                               note=chunk.strip())
+        if re.search(r"\bpan(ning|s)?\b", chunk):
+            sd.camera = "pan"
+        elif re.search(r"zoom(ing)? in(to)?\b|zoom(ing)? shot|push(ing)? in", chunk):
+            sd.camera = "zoom"
+        elif re.search(r"\bshaky\b|handheld|camera shake", chunk):
+            sd.camera = "shaky"
         if window:
             sd.start, sd.end, sd.fixed = window[0], window[1], True
         if hold:

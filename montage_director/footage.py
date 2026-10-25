@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 ANALYSIS_FPS = 6.0
 THUMB_W, THUMB_H = 256, 144
 STRIP_W, STRIP_H = 160, 90
-ANALYSIS_VERSION = 9
+ANALYSIS_VERSION = 12
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".wmv", ".flv", ".ts"}
 
 
@@ -49,6 +49,10 @@ class Shot:
     group: int = -1         # "same scene" group across the library: same take or a near-duplicate
     sig: list[int] = field(default_factory=list, repr=False)  # tiny colour fingerprint
     strip: str = ""         # JPEG of 3 frames (start, peak action, end) for the AI Director
+    impacts: list = field(default_factory=list)   # [(source s, strength 0..1)]: punches, hits, flashes
+    centers: list = field(default_factory=list)   # [(source s, x 0..1, y 0..1)]: where the action is
+    camera: str = "still"   # still | pan | zoom | shaky | moving
+    text: float = 0.0       # 0..1: captions, logos, title cards on screen
 
     @property
     def duration(self) -> float:
@@ -62,6 +66,7 @@ class Source:
     width: int
     height: int
     fps: float
+    proxy: str = ""          # small copy for fast previews (empty = use the original)
 
 
 @dataclass
@@ -109,17 +114,32 @@ def analyze_footage(paths: list[str | Path], cancel=None, progress=None) -> Foot
 
     footage = Footage()
     per_file: list[tuple[Source, list[dict]]] = []
-    for i, path in enumerate(files):
-        check_cancel(cancel)
+    done = [0.0] * len(files)
+
+    def report(i, f):
+        done[i] = f
         if progress:
-            progress(i / len(files), f"Watching {path.name}")
+            progress(sum(done) / len(files), f"Watching your footage ({int(sum(done))}/{len(files)} videos)")
+
+    def work(i, path):
+        check_cancel(cancel)
         try:
-            source, shots = _analyze_one(path, cancel,
-                                         lambda f, i=i: progress and progress((i + f) / len(files),
-                                                                              f"Watching {path.name}"))
+            result = _analyze_one(path, cancel, lambda f: report(i, f))
         except MediaError as exc:
             log.warning("Skipping %s: %s", path.name, exc)
+            result = None
+        report(i, 1.0)
+        return result
+
+    # Two videos at a time: decoding is the slow part and uses separate processes.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(work, range(len(files)), files))
+    for path, result in zip(files, results):
+        if result is None:
             continue
+        source, shots = result
         per_file.append((source, shots))
         log.info("  %s: %d shots (%.0fs)", path.name, len(shots), source.duration)
 
@@ -134,12 +154,20 @@ def analyze_footage(paths: list[str | Path], cancel=None, progress=None) -> Foot
     for src_index, (source, shots) in enumerate(per_file):
         footage.sources.append(source)
         for s in shots:
-            footage.shots.append(Shot(
+            shot = Shot(
                 id=len(footage.shots), source=src_index,
                 take=src_index * 1_000_000 + int(s.get("take", 0)),
                 motion=float(np.clip((s["motion_raw"] - lo) / span, 0, 1)),
-                **{k: v for k, v in s.items() if k not in ("source", "take")},
-            ))
+                **{k: v for k, v in s.items() if k not in ("source", "take", "overlay")},
+            )
+            shot._overlay = float(s.get("overlay", 0.0))
+            footage.shots.append(shot)
+    for src_index in range(len(footage.sources)):
+        own = [s for s in footage.shots if s.source == src_index]
+        overlays = [getattr(s, "_overlay", 0.0) for s in own]
+        base = float(np.median(overlays)) if overlays else 0.0
+        for s in own:
+            s.text = round(max(s.text, float(np.clip((getattr(s, "_overlay", 0.0) - base - 0.004) * 60, 0, 1))), 2)
     _group_scenes(footage)
     if progress:
         progress(1.0, footage.summary())
@@ -198,10 +226,12 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
     out_dir = cache_dir() / "footage" / key
     meta_file = out_dir / "shots.json"
     source = Source(str(path), info.duration, info.width, info.height, info.fps)
+    proxy = out_dir / "proxy.mp4"
     if meta_file.is_file():
         try:
             data = json.loads(meta_file.read_text(encoding="utf-8"))
             if all(Path(s["thumb"]).is_file() for s in data["shots"]):
+                source.proxy = str(proxy) if proxy.is_file() and proxy.stat().st_size > 1000 else ""
                 return source, data["shots"]
         except (OSError, ValueError, KeyError):
             pass
@@ -235,6 +265,7 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
         strip = out_dir / f"strip_{len(shots):05d}.jpg"
         strip_img.save(strip, quality=78)
         br = np.array([f["bright"] for f in seg])
+        extra = _shot_details(seg, m, step)
         # Baked-in bars: edge columns/rows whose median brightness never rises above near-black.
         lum = np.stack([f["frame"].mean(axis=2) for f in seg])
         col_max = np.median(lum, axis=1).max(axis=0)
@@ -254,10 +285,11 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
             "take": take,
             "strip": str(strip),
             "sig": [int(v) for v in sig],
+            **extra,
         })
         seg.clear()
 
-    for t, frame in iter_frames(path, ANALYSIS_FPS, THUMB_W, THUMB_H, cancel):
+    for t, frame in iter_frames(path, ANALYSIS_FPS, THUMB_W, THUMB_H, cancel, fast=True, proxy=proxy):
         small = frame[::4, ::4].astype(np.float32)
         gray = small.mean(axis=2)
 
@@ -286,7 +318,7 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
             if is_cut:
                 motion = 0.0  # the jump across a cut is not motion
         seg.append({
-            "t": t, "frame": frame, "motion": motion,
+            "t": t, "frame": frame, "motion": motion, "g": gray, "g2": frame[::2, ::2].astype(np.float32).mean(axis=2),
             "bright": float(gray.mean() / 255.0),
             "sat": float(((mx - mn) / (mx + 1e-3)).mean()),
             "color": small.reshape(-1, 3).mean(axis=0),
@@ -301,6 +333,7 @@ def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
 
     if not shots:
         raise MediaError("too short or unreadable")
+    source.proxy = str(proxy) if proxy.is_file() and proxy.stat().st_size > 1000 else ""
     meta_file.write_text(json.dumps({"source": asdict(source), "shots": shots}), encoding="utf-8")
     return source, shots
 
@@ -323,3 +356,135 @@ def _bars(col_max: np.ndarray, row_max: np.ndarray) -> tuple[float, float, float
     y0, y1 = span(row_max)
     W, H = len(col_max), len(row_max)
     return (round(x0 / W, 4), round(y0 / H, 4), round((x1 - x0) / W, 4), round((y1 - y0) / H, 4))
+
+
+
+def _shift(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
+    """Global shift between two small grey frames by phase correlation (pixels: dy, dx)."""
+    fa, fb = np.fft.fft2(a - a.mean()), np.fft.fft2(b - b.mean())
+    r = fa * np.conj(fb)
+    r /= np.abs(r) + 1e-9
+    corr = np.abs(np.fft.ifft2(r))
+    y, x = np.unravel_index(int(np.argmax(corr)), corr.shape)
+    h, w = a.shape
+
+    def sub(c_m, c_0, c_p):  # parabola through the peak and its neighbours: sub-pixel offset
+        den = c_m - 2 * c_0 + c_p
+        return 0.0 if abs(den) < 1e-12 else float(np.clip(0.5 * (c_m - c_p) / den, -0.5, 0.5))
+
+    fy = y + sub(corr[(y - 1) % h, x], corr[y, x], corr[(y + 1) % h, x])
+    fx = x + sub(corr[y, (x - 1) % w], corr[y, x], corr[y, (x + 1) % w])
+    return float(fy if fy <= h / 2 else fy - h), float(fx if fx <= w / 2 else fx - w)
+
+
+def _zoomed(a: np.ndarray, factor: float) -> np.ndarray:
+    """Centre crop by `factor` scaled back to size (a cheap 'zoomed in' version)."""
+    h, w = a.shape
+    ch, cw = int(h / factor), int(w / factor)
+    y0, x0 = (h - ch) // 2, (w - cw) // 2
+    crop = a[y0:y0 + ch, x0:x0 + cw]
+    yi = (np.arange(h) * ch / h).astype(int)
+    xi = (np.arange(w) * cw / w).astype(int)
+    return crop[yi][:, xi]
+
+
+def _shot_details(seg: list[dict], m: np.ndarray, step: float) -> dict:
+    """Impacts, where the action is, how the camera moves, and on-screen text for one shot."""
+    times = [f["t"] for f in seg]
+    grays = [f["g"] for f in seg]
+    h, w = grays[0].shape
+
+    # Impacts: motion spikes and sudden flashes (anime impact frames, explosions, hits).
+    bright = np.array([f["bright"] for f in seg])
+    score = np.zeros(len(seg))
+    score[1:] = m
+    flash = np.maximum(0.0, np.diff(bright, prepend=bright[:1]))
+    score = score + 2.0 * flash
+    base = float(np.median(score[1:])) if len(score) > 1 else 0.0
+    impacts = []
+    for i in range(1, len(seg)):
+        left = score[i - 1]
+        right = score[i + 1] if i + 1 < len(seg) else -1
+        if score[i] >= left and score[i] > right and score[i] >= max(0.02, 1.4 * base):
+            impacts.append((round(times[i], 3), float(score[i])))
+    if impacts:
+        top = max(v for _, v in impacts)
+        impacts = sorted(impacts, key=lambda x: -x[1])[:6]
+        impacts = sorted((t, round(v / top, 2)) for t, v in impacts)
+
+    # Where the action is: centroid of change between frames (or of contrast when still).
+    ys, xs = np.mgrid[0:h, 0:w]
+    centers = []
+    for i, g in enumerate(grays):
+        d = np.abs(g - grays[i - 1]) if i else np.abs(g - g.mean())
+        wgt = d ** 2
+        tot = float(wgt.sum())
+        if tot < 1e-6 or (i and float(d.mean()) < 1.5):
+            wgt = np.abs(g - g.mean()) ** 2
+            tot = float(wgt.sum()) or 1.0
+        centers.append([float((xs * wgt).sum() / tot / w), float((ys * wgt).sum() / tot / h)])
+    cx = np.convolve([c[0] for c in centers], np.ones(3) / 3, mode="same")
+    cy = np.convolve([c[1] for c in centers], np.ones(3) / 3, mode="same")
+    if len(centers) >= 3:
+        cx[0], cx[-1], cy[0], cy[-1] = centers[0][0], centers[-1][0], centers[0][1], centers[-1][1]
+    centers = [(round(times[i], 3), round(float(cx[i]), 3), round(float(cy[i]), 3)) for i in range(len(seg))]
+
+    # Camera: how each quarter of the picture moves. All quarters the same way = pan;
+    # quarters moving outward (or inward) from the centre = zoom; back and forth = shaky.
+    camera = "still"
+    g2 = [f["g2"] for f in seg]
+    if float(m.mean()) > 0.004 and len(g2) >= 3:
+        H2, W2 = g2[0].shape
+        hh, hw = H2 // 2, W2 // 2
+        quads = [(slice(0, hh), slice(0, hw)), (slice(0, hh), slice(hw, W2)),
+                 (slice(hh, H2), slice(0, hw)), (slice(hh, H2), slice(hw, W2))]
+        gx, gy, div = [], [], []
+        for i in range(1, len(g2)):
+            q = [_shift(g2[i][a, b], g2[i - 1][a, b]) for a, b in quads]  # (dy, dx) per quarter: TL TR BL BR
+            dx = [v[1] for v in q]
+            dy = [v[0] for v in q]
+            gx.append(float(np.median(dx)))
+            gy.append(float(np.median(dy)))
+            div.append(((dx[1] + dx[3]) - (dx[0] + dx[2]) + (dy[2] + dy[3]) - (dy[0] + dy[1])) / 4.0)
+        gx, gy, div = np.array(gx), np.array(gy), np.array(div)
+        mag = np.hypot(gx, gy)
+        zoom_mag = float(np.median(np.abs(div)))
+        zoom_sign = np.sign(div[np.abs(div) >= 0.15])
+        moving = mag >= 0.8
+        sx, sy = np.sign(gx[np.abs(gx) >= 0.8]), np.sign(gy[np.abs(gy) >= 0.8])
+        consistent = (len(sx) >= 2 and abs(sx.mean()) >= 0.7) or (len(sy) >= 2 and abs(sy.mean()) >= 0.7)
+        flips = int(np.sum(np.diff(np.sign(gx[moving])) != 0) + np.sum(np.diff(np.sign(gy[moving])) != 0)) \
+            if moving.sum() > 2 else 0
+        # A zoom: the picture spreads out (or pulls in) step after step, more than it slides.
+        if (zoom_mag >= 0.25 and len(zoom_sign) >= max(2, 0.7 * len(div))
+                and abs(zoom_sign.mean()) >= 0.8 and zoom_mag >= 1.5 * float(np.median(mag))):
+            camera = "zoom"
+        elif moving.mean() >= 0.5 and consistent:
+            camera = "pan"
+        elif moving.mean() >= 0.5 and flips >= max(2, int(moving.sum())):
+            camera = "shaky"
+        else:
+            camera = "moving"
+
+    # On-screen text: sharp edges that stay put while the picture moves (captions, logos),
+    # or a flat background with sharp lettering and no motion (title cards).
+    full = [f["frame"].mean(axis=2) for f in seg[:: max(1, len(seg) // 8)]]
+    edges = []
+    for g in full:
+        gx = np.abs(np.diff(g, axis=1))[:-1, :]
+        gy = np.abs(np.diff(g, axis=0))[:, :-1]
+        edges.append(np.maximum(gx, gy))
+    strong = [e > 60 for e in edges]
+    overlay = 0.0
+    card = 0.0
+    if len(strong) >= 3 and float(m.mean()) > 0.01:
+        persistent = np.mean(strong, axis=0) >= 0.85
+        overlay = float(persistent.mean())
+    if float(m.mean()) < 0.006:
+        e = edges[len(edges) // 2]
+        flat = float((e < 8).mean())
+        lettering = float((e > 60).mean())
+        if flat >= 0.75 and 0.01 <= lettering <= 0.2:
+            card = 0.9
+    return {"impacts": impacts, "centers": centers, "camera": camera,
+            "overlay": round(overlay, 4), "text": round(card, 2)}

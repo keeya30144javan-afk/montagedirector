@@ -99,19 +99,32 @@ def probe(path: str | Path) -> MediaInfo:
 
 
 def iter_frames(path: Path, fps: float, width: int, height: int, cancel=None,
-                start: float = 0.0, duration: float | None = None):
-    """Yield (time, HxWx3 uint8 frame) decoded at a low rate and resolution."""
+                start: float = 0.0, duration: float | None = None, fast: bool = False,
+                proxy: Path | None = None):
+    """Yield (time, HxWx3 uint8 frame) decoded at a low rate and resolution.
+
+    fast=True skips the decoder's deblocking filter and uses cheaper scaling: noticeably
+    quicker, and the small blockiness doesn't matter for measuring motion.
+    """
     cmd = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error"]
+    if fast:
+        cmd += ["-skip_loop_filter", "all", "-threads", "0"]
     if start > 0:
         cmd += ["-ss", f"{start:.3f}"]
     cmd += ["-i", str(path)]
     if duration is not None:
         cmd += ["-t", f"{duration:.3f}"]
     cmd += [
-        "-an", "-sn",
-        "-vf", f"fps={fps},scale={width}:{height}:flags=area,format=rgb24",
+        "-map", "0:v:0", "-an", "-sn",
+        "-vf", f"fps={fps},scale={width}:{height}:flags={'fast_bilinear' if fast else 'area'},format=rgb24",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
     ]
+    if proxy is not None:
+        # In the same decoding pass: a small copy that's quick to jump around in (a keyframe
+        # every half second), used for previews. Exports always use the original.
+        cmd += ["-map", "0:v:0", "-an", "-sn", "-vf", "scale=-2:360:flags=fast_bilinear,format=yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "fastdecode", "-crf", "27",
+                "-g", "15", "-keyint_min", "15", "-sc_threshold", "0", "-y", str(proxy)]
     frame_bytes = width * height * 3
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             bufsize=frame_bytes * 4, **_popen_kwargs())

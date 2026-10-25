@@ -43,6 +43,7 @@ class Cut:
     effects: list[Effect] = field(default_factory=list)
     section: str = ""
     crop: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # remove baked-in black bars
+    focus: tuple[float, float] = (0.5, 0.5)   # where the action is (0..1): crops follow it
 
     @property
     def frames(self) -> int:
@@ -73,6 +74,7 @@ class EditPlan:
     summary: str = ""
     warnings: list[str] = field(default_factory=list)
     timeline: list[str] = field(default_factory=list)   # how the director's instructions were placed
+    proxies: dict[str, str] = field(default_factory=dict)  # source path -> small preview copy
 
     @property
     def duration(self) -> float:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import logging
 import random
+from pathlib import Path
 from dataclasses import dataclass
 
 import numpy as np
@@ -97,6 +98,7 @@ class _Planner:
                     end = s.end
                 self.take_end[s.id] = end
         self.timeline_notes: list[str] = []
+        self.hit_aligned = 0
         self.warnings: list[str] = []
         self.resolve_sections()
 
@@ -474,7 +476,9 @@ class _Planner:
             def hold_score(s):
                 fits = min(1.0, self.usable_len(s) / max(need, 0.1))
                 calm = (1 - s.motion) if sd.still else 1 - abs(s.motion - 0.35)
-                return 3.0 * fits + 1.5 * calm + (0.5 if s.static and sd.still else 0) + self.rng.gauss(0, 0.1)
+                camera = 2.0 if sd.camera and s.camera == sd.camera else 0.0
+                return (3.0 * fits + 1.5 * calm + camera + (0.5 if s.static and sd.still else 0)
+                        - 3.0 * s.text + self.rng.gauss(0, 0.1))
             return max(pool, key=hold_score)
         if sd and sd.shots:
             # The director's list for this section, in order, each scene once.
@@ -501,6 +505,9 @@ class _Planner:
         target = self.target_energy(t0, t0 + need)
         n_sources = len(self.footage.sources)
         pool = [s for s in self.shots if self.allowed(s)]
+        clean = [s for s in pool if s.text < 0.85]   # full-screen title cards only when nothing else is left
+        if clean:
+            pool = clean
         if not pool:  # tiny footage: fall back to anything not shown in the last few cuts
             pool = [s for s in self.shots if self.cut_i - self.group_last.get(s.group, -99) > 2] or self.shots
         # Prefer shots long enough for the cut, so it never runs on into the next scene
@@ -519,6 +526,9 @@ class _Planner:
                     score -= 0.35
             if s.static and target > 0.4:
                 score -= 0.8
+            score -= 1.5 * s.text   # captions, logos, title cards
+            if sd and sd.camera and s.camera == sd.camera:
+                score += 1.0
             if s.duration < need * 0.9:
                 score -= 0.6
             score += self.rng.gauss(0, 0.25)
@@ -526,11 +536,48 @@ class _Planner:
                 best, best_score = s, score
         return best
 
-    def in_point(self, shot: Shot, need: float, energetic: bool) -> float:
+    @staticmethod
+    def focus_of(shot: Shot, a: float, b: float) -> tuple[float, float]:
+        """Where the action is during [a, b] of the source, in the visible (de-barred) picture."""
+        pts = [(x, y) for t, x, y in shot.centers if a - 0.1 <= t <= b + 0.1] or [(x, y) for _, x, y in shot.centers]
+        if not pts:
+            return (0.5, 0.5)
+        x = float(np.mean([p[0] for p in pts]))
+        y = float(np.mean([p[1] for p in pts]))
+        cx, cy, cw, ch = shot.crop  # centres were measured on the full frame; bars are cropped first
+        x = (x - cx) / cw if cw else x
+        y = (y - cy) / ch if ch else y
+        return (round(float(np.clip(x, 0, 1)), 3), round(float(np.clip(y, 0, 1)), 3))
+
+    def drum_hits_in(self, t0: float, t1: float) -> list[float]:
+        hits = sorted(self.song.kicks + self.song.snares)
+        out = []
+        for t in hits:
+            if t0 - 0.06 <= t < t1 - 0.05 and (not out or t - out[-1] > 0.08):
+                out.append(t)
+        return out
+
+    def in_point(self, shot: Shot, need: float, energetic: bool, t0: float = 0.0, dur: float = 0.0,
+                 speed: float = 1.0) -> float:
         src = self.footage.sources[shot.source]
         latest = max(0.0, src.duration - need - 0.05)
         lo = shot.start + 0.08
         hi = max(lo, min(shot.end - 0.3, shot.start + self.usable_len(shot) + 0.08 - need))
+        # Hit on the hit: start the clip so its punch / impact frame lands on a drum hit.
+        if energetic and shot.impacts and dur > 0:
+            best = None
+            for h in self.drum_hits_in(t0, t0 + dur)[:3]:
+                offset = max(0.0, h - t0) * speed          # seconds into the clip where the hit falls
+                for p, strength in shot.impacts:
+                    start = p - offset
+                    if lo - 1e-6 <= start <= hi + 1e-6:
+                        overlap = any(start < b and start + need > a for a, b in self.used_windows.get(shot.id, []))
+                        score = strength - (0.5 if overlap else 0.0) - 0.15 * offset
+                        if best is None or score > best[0]:
+                            best = (score, start)
+            if best is not None:
+                self.hit_aligned += 1
+                return float(np.clip(best[1], 0.0, latest))
         if energetic:
             start = shot.peak - need * 0.4
         else:
@@ -568,7 +615,7 @@ class _Planner:
                 speed = max(0.25, round(self.usable_len(shot) / dur, 3))
                 need = dur * speed
             energetic = self.target_energy(t0, t1) > 0.5
-            start = self.in_point(shot, need, energetic)
+            start = self.in_point(shot, need, energetic and not reverse, t0, dur, speed)
             self.uses[shot.id] = self.uses.get(shot.id, 0) + 1
             self.used_windows.setdefault(shot.id, []).append((start, start + need))
             self.group_uses[shot.group] = self.group_uses.get(shot.group, 0) + 1
@@ -576,7 +623,8 @@ class _Planner:
             self.cut_i += 1
             src = self.footage.sources[shot.source]
             cut = Cut(f0=f0, f1=f1, shot=shot.id, source=src.path, src_start=round(start, 3),
-                      speed=speed, reverse=reverse, section=label, crop=tuple(shot.crop))
+                      speed=speed, reverse=reverse, section=label, crop=tuple(shot.crop),
+                      focus=self.focus_of(shot, start, start + need))
             cuts.append(cut)
             prev = cut
 
@@ -586,6 +634,7 @@ class _Planner:
                         song=self.song.path, song_start=round(self.S, 3), frames=self.total,
                         cuts=cuts, look=self.d.look, fit=self.out.fit, summary=self.d.summary)
         plan.timeline = list(self.timeline_notes)
+        plan.proxies = {s.path: s.proxy for s in self.footage.sources if s.proxy and Path(s.proxy).is_file()}
         plan.warnings.extend(self.warnings)
         reused = self.cut_i - len(self.group_uses)
         if reused > 0:
@@ -694,7 +743,7 @@ class _Planner:
         moving = (split - c.f0) / self.fps * c.speed
         tail = Cut(f0=split, f1=c.f1, shot=c.shot, source=c.source,
                    src_start=round(c.src_start + (0 if c.reverse else moving), 3),
-                   freeze=True, section=c.section, crop=c.crop)
+                   freeze=True, section=c.section, crop=c.crop, focus=c.focus)
         tail.effects = [Effect(e.kind, e.frame - (split - c.f0), e.frames, e.intensity, e.color)
                         for e in c.effects if e.frame >= split - c.f0]
         c.effects = [e for e in c.effects if e.frame < split - c.f0]

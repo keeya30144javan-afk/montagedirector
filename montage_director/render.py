@@ -26,7 +26,7 @@ from .plan import Cut, EditPlan, Effect, Look
 
 log = logging.getLogger(__name__)
 
-RENDER_VERSION = 5
+RENDER_VERSION = 8
 SEGMENT_CACHE_LIMIT = 3 * 1024 ** 3  # bytes
 
 
@@ -44,6 +44,65 @@ EXPORT = Quality("export", 1.0, "medium", 18, "256k")
 EXPORT_BEST = Quality("best", 1.0, "slow", 16, "320k")
 
 
+_ENCODER: str | None = None
+_GPU_FAILED = False
+
+
+def pick_encoder() -> str:
+    """The fastest H.264 encoder that works on this machine (graphics card first)."""
+    global _ENCODER
+    if _ENCODER is not None:
+        return _ENCODER
+    import subprocess
+    import sys
+
+    from .ffmpeg_tools import _popen_kwargs
+
+    if os.environ.get("MONTAGE_NO_GPU") or _GPU_FAILED:
+        _ENCODER = "libx264"
+        return _ENCODER
+    if sys.platform == "darwin":
+        candidates = ["h264_videotoolbox"]
+    elif sys.platform == "win32":
+        candidates = ["h264_nvenc", "h264_qsv", "h264_amf"]
+    else:
+        candidates = ["h264_nvenc", "h264_qsv"]
+    _ENCODER = "libx264"
+    for enc in candidates:
+        try:
+            r = subprocess.run([ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                                "color=c=black:s=320x240:r=30:d=0.3", "-pix_fmt", "yuv420p", "-c:v", enc,
+                                "-frames:v", "8", "-f", "null", "-"], capture_output=True, timeout=20,
+                               **_popen_kwargs())
+        except Exception:
+            continue
+        if r.returncode == 0:
+            _ENCODER = enc
+            break
+    log.info("Video encoder: %s", _ENCODER)
+    return _ENCODER
+
+
+def encoder_args(enc: str, quality: "Quality", fps: int) -> list[str]:
+    g = ["-g", str(fps * 2), "-pix_fmt", "yuv420p"]
+    if enc == "h264_nvenc":
+        return ["-c:v", enc, "-preset", "p2" if quality.name == "preview" else "p5", "-rc", "vbr",
+                "-cq", str(quality.crf + 1), "-b:v", "0"] + g
+    if enc == "h264_qsv":
+        return ["-c:v", enc, "-preset", "veryfast" if quality.name == "preview" else "medium",
+                "-global_quality", str(quality.crf + 2)] + g
+    if enc == "h264_amf":
+        return ["-c:v", enc, "-quality", "speed" if quality.name == "preview" else "balanced", "-rc", "cqp",
+                "-qp_i", str(quality.crf), "-qp_p", str(quality.crf + 2)] + g
+    if enc == "h264_videotoolbox":
+        return ["-c:v", enc, "-q:v", str(int(max(20, min(90, 100 - quality.crf * 2.2))))] + g
+    return ["-c:v", "libx264", "-preset", quality.preset, "-crf", str(quality.crf), "-threads", "2"] + g
+
+
+class _UseCPU(Exception):
+    """The graphics card encoder failed: redo the render on the processor."""
+
+
 def _even(v: float) -> int:
     return max(2, int(round(v / 2)) * 2)
 
@@ -52,8 +111,22 @@ def _between(windows: list[tuple[int, int]], var: str = "n") -> str:
     return "+".join(f"between({var},{a},{b})" for a, b in windows) or "0"
 
 
-def segment_filter(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> str:
-    """Build the filtergraph for one cut. Input is [0:v], output is [v]."""
+def segment_filter(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int, idx: int = 0) -> str:
+    """Build the filtergraph for one cut. Input is [idx:v], output is [v{idx}] with exactly
+    cut.frames frames (so several cuts can be joined inside one ffmpeg run)."""
+    return _label(_segment_graph(cut, look, fit, W, H, fps), idx, cut.frames)
+
+
+def _label(graph: str, idx: int, frames: int) -> str:
+    graph = graph.replace("[0:v]", f"[{idx}:v]")
+    for name in ("f", "s1", "s2", "bg", "fg", "g1", "g2", "g3"):
+        graph = graph.replace(f"[{name}]", f"[{name}_{idx}]")
+    assert graph.endswith("[v]")
+    # square pixels + exact frame count, so cuts can be joined inside one run
+    return graph[:-3] + f",setsar=1,trim=end_frame={frames},setpts=PTS-STARTPTS[v{idx}]"
+
+
+def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> str:
     n = cut.frames
     need = n / fps * cut.speed
     pre: list[str] = []
@@ -81,8 +154,11 @@ def segment_filter(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
         graph.append(f"[s2]scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic[fg]")
         graph.append("[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[f]")
     else:
+        fx, fy = cut.focus
+        # crop to fill, centred on the action (matters when the shapes differ, e.g. vertical edits)
         graph.append(f"[0:v]{base},scale={W}:{H}:force_original_aspect_ratio=increase:flags=bicubic,"
-                     f"crop={W}:{H},setsar=1[f]")
+                     f"crop={W}:{H}:'min(max(iw*{fx:.3f}-{W}/2,0),iw-{W})':'min(max(ih*{fy:.3f}-{H}/2,0),ih-{H})',"
+                     f"setsar=1[f]")
 
     chain: list[str] = []
     by_kind: dict[str, list[Effect]] = {}
@@ -158,7 +234,9 @@ def segment_filter(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
         sigma = 6 + 14 * min(1.0, look.glow)
         opacity = 0.18 + 0.4 * min(1.0, look.glow)
         graph.append(f"{tail},format=gbrp,split[g1][g2]")
-        graph.append(f"[g2]gblur=sigma={sigma:.1f}[g3]")
+        # blur a quarter-size copy and scale it back: looks the same, a fraction of the work
+        graph.append(f"[g2]scale={_even(W / 4)}:{_even(H / 4)}:flags=fast_bilinear,gblur=sigma={sigma / 4:.2f},"
+                     f"scale={W}:{H}:flags=bilinear[g3]")
         graph.append(f"[g1][g3]blend=all_mode=screen:all_opacity={opacity:.2f},format=yuv420p[v]")
     else:
         graph.append(f"{tail},format=yuv420p[v]")
@@ -174,6 +252,74 @@ class Renderer:
     def cancel(self) -> None:
         self.procs.kill_all()
 
+    def _render_batches(self, plan: EditPlan, quality: "Quality", W: int, H: int, seg_dir: Path,
+                        cancel, progress, enc: str) -> list[Path]:
+        graphs = [_segment_graph(c, plan.look, plan.fit, W, H, plan.fps) for c in plan.cuts]
+        use_proxy = quality.name == "preview"
+        keys = [_cut_key(c, g, quality, plan.fps, enc, plan.proxies.get(c.source) if use_proxy else None)
+                for c, g in zip(plan.cuts, graphs)]
+        runs = _batches(keys)
+        files = []
+        todo = []
+        for a, b in runs:
+            bkey = hashlib.sha1("".join(keys[a:b]).encode()).hexdigest()[:20]
+            target = seg_dir / f"b_{bkey}.mp4"
+            files.append(target)
+            if not target.is_file():
+                todo.append((a, b, target))
+        cuts_total = len(plan.cuts)
+        cuts_done = cuts_total - sum(b - a for a, b, _ in todo)
+        if cuts_done:
+            log.info("Reusing %d of %d rendered cuts", cuts_done, cuts_total)
+        started = time.time()
+        lock = threading.Lock()
+
+        def encode(a: int, b: int, target: Path):
+            cmd = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y"]
+            parts = []
+            for i, cut in enumerate(plan.cuts[a:b]):
+                need = cut.frames / plan.fps * cut.speed
+                src = plan.proxies.get(cut.source, cut.source) if quality.name == "preview" else cut.source
+                cmd += ["-ss", f"{max(0.0, cut.src_start):.3f}", "-t", f"{need + 0.6:.3f}", "-i", src]
+                parts.append(_label(graphs[a + i], i, cut.frames))
+            n = b - a
+            graph = ";".join(parts) + ";" + "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[out]"
+            frames = sum(c.frames for c in plan.cuts[a:b])
+            tmp = target.with_name(target.stem + f".part{threading.get_ident()}.mp4")
+            cmd += ["-filter_complex", graph, "-map", "[out]", "-an", "-frames:v", str(frames),
+                    "-fps_mode", "cfr", "-r", str(plan.fps), *encoder_args(enc, quality, plan.fps),
+                    "-video_track_timescale", str(plan.fps * 1000), str(tmp)]
+            try:
+                self.procs.run(cmd, cancel)
+                os.replace(tmp, target)
+            except MediaError:
+                if enc != "libx264":
+                    raise _UseCPU() from None
+                raise
+            finally:
+                if tmp.exists():
+                    tmp.unlink(missing_ok=True)
+
+        if progress:
+            progress(cuts_done / max(cuts_total, 1) * 0.92, f"Rendering cuts ({cuts_done}/{cuts_total})")
+        if todo:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                futures = {pool.submit(encode, a, b, t): b - a for a, b, t in todo}
+                try:
+                    for fut in as_completed(futures):
+                        fut.result()
+                        with lock:
+                            cuts_done += futures[fut]
+                        if progress:
+                            progress(cuts_done / cuts_total * 0.92, f"Rendering cuts ({cuts_done}/{cuts_total})")
+                except BaseException:
+                    for f in futures:
+                        f.cancel()
+                    self.procs.kill_all()
+                    raise
+        log.info("Cuts rendered in %.1fs with %s (%d runs)", time.time() - started, enc, len(todo))
+        return files
+
     def render(self, plan: EditPlan, out_path: str | Path, quality: Quality = PREVIEW,
                cancel: threading.Event | None = None, progress=None) -> Path:
         plan.validate()
@@ -184,61 +330,13 @@ class Renderer:
         seg_dir.mkdir(parents=True, exist_ok=True)
         _trim_cache(seg_dir)
 
-        jobs = []
-        for cut in plan.cuts:
-            graph = segment_filter(cut, plan.look, plan.fit, W, H, plan.fps)
-            src = Path(cut.source)
-            st = src.stat()
-            key = hashlib.sha1(json.dumps({
-                "v": RENDER_VERSION, "src": str(src), "size": st.st_size, "mtime": int(st.st_mtime),
-                "ss": cut.src_start, "n": cut.frames, "speed": cut.speed, "freeze": cut.freeze,
-                "graph": graph, "q": asdict(quality), "fps": plan.fps,
-            }, sort_keys=True).encode()).hexdigest()[:20]
-            jobs.append((cut, graph, seg_dir / f"{key}.mp4"))
-
-        todo = [j for j in jobs if not j[2].is_file()]
-        reused = len(jobs) - len(todo)
-        if reused:
-            log.info("Reusing %d of %d rendered cuts", reused, len(jobs))
-        done = reused
-        total = len(jobs)
-        started = time.time()
-
-        def encode(job):
-            cut, graph, target = job
-            need = cut.frames / plan.fps * cut.speed
-            tmp = target.with_name(target.stem + f".part{threading.get_ident()}.mp4")
-            cmd = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
-                   "-ss", f"{max(0.0, cut.src_start):.3f}", "-t", f"{need + 0.6:.3f}",
-                   "-i", cut.source, "-filter_complex", graph, "-map", "[v]", "-an",
-                   "-frames:v", str(cut.frames), "-fps_mode", "cfr", "-r", str(plan.fps),
-                   "-c:v", "libx264", "-preset", quality.preset, "-crf", str(quality.crf),
-                   "-pix_fmt", "yuv420p", "-g", str(plan.fps * 2), "-threads", "2",
-                   "-video_track_timescale", str(plan.fps * 1000), str(tmp)]
-            try:
-                self.procs.run(cmd, cancel)
-                os.replace(tmp, target)
-            finally:
-                if tmp.exists():
-                    tmp.unlink(missing_ok=True)
-
-        if progress:
-            progress(done / max(total, 1) * 0.92, f"Rendering cuts ({done}/{total})")
-        if todo:
-            with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                futures = [pool.submit(encode, j) for j in todo]
-                try:
-                    for fut in as_completed(futures):
-                        fut.result()
-                        done += 1
-                        if progress:
-                            progress(done / total * 0.92, f"Rendering cuts ({done}/{total})")
-                except BaseException:
-                    for f in futures:
-                        f.cancel()
-                    self.procs.kill_all()
-                    raise
-        log.info("Cuts rendered in %.1fs", time.time() - started)
+        try:
+            files = self._render_batches(plan, quality, W, H, seg_dir, cancel, progress, pick_encoder())
+        except _UseCPU:
+            global _ENCODER, _GPU_FAILED
+            log.warning("Graphics card encoding failed; using the processor instead.")
+            _GPU_FAILED, _ENCODER = True, None
+            files = self._render_batches(plan, quality, W, H, seg_dir, cancel, progress, pick_encoder())
         check_cancel(cancel)
 
         # Join + music.
@@ -248,7 +346,7 @@ class Renderer:
         try:
             listing = work / "list.txt"
             listing.write_text("".join(
-                "file '" + str(t).replace("\\", "/").replace("'", "'\\''") + "'\n" for _, _, t in jobs),
+                "file '" + str(t).replace("\\", "/").replace("'", "'\\''") + "'\n" for t in files),
                 encoding="utf-8")
             dur = plan.duration
             fade_out = min(1.5, dur / 4)
@@ -272,6 +370,30 @@ class Renderer:
         if progress:
             progress(1.0, f"Saved {out_path.name}")
         return out_path
+
+
+BATCH_MAX = 10
+
+
+def _cut_key(cut: Cut, graph: str, quality: "Quality", fps: int, enc: str, proxy: str | None = None) -> str:
+    src = Path(proxy or cut.source)
+    st = src.stat()
+    return hashlib.sha1(json.dumps({
+        "v": RENDER_VERSION, "src": str(src), "size": st.st_size, "mtime": int(st.st_mtime),
+        "ss": cut.src_start, "n": cut.frames, "speed": cut.speed, "freeze": cut.freeze,
+        "graph": graph, "q": asdict(quality), "fps": fps, "enc": enc,
+    }, sort_keys=True).encode()).hexdigest()
+
+
+def _batches(keys: list[str]) -> list[tuple[int, int]]:
+    """Split cuts into runs of up to BATCH_MAX. Boundaries depend on each cut's own content,
+    so after a refine only the runs containing changed cuts are rendered again."""
+    out, start = [], 0
+    for i in range(1, len(keys) + 1):
+        if i == len(keys) or i - start >= BATCH_MAX or (i - start >= 3 and int(keys[i][:4], 16) % 5 == 0):
+            out.append((start, i))
+            start = i
+    return out
 
 
 def _trim_cache(seg_dir: Path) -> None:
