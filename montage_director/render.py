@@ -234,6 +234,8 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
                          f"enable='eq(n,{e.frame + k})'")
     for e in by_kind.get("fade_black", []):
         chain.append(f"fade=t=out:s={e.frame}:n={max(1, e.frames)}:color=black")
+    for e in by_kind.get("fade_in", []):
+        chain.append(f"fade=t=in:s={e.frame}:n={max(1, e.frames)}:color=black")
     if look.letterbox:
         bar = _even(H * (0.11 if W > H else 0.07))
         chain.append(f"drawbox=x=0:y=0:w=iw:h={bar}:color=black:t=fill")

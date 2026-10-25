@@ -66,7 +66,9 @@ class _Planner:
             if m.tapped:
                 m.time = self.snap_tap(m.time)
                 continue
-            if m.time < 0:  # "...then fade to black" at the very end
+            if m.time <= -2:  # "start with a fade in"
+                m.time = self.S
+            elif m.time < 0:  # "...then fade to black" at the very end
                 m.time = max(self.S, self.E - (m.duration or 1.5))
             elif m.action != "fade_black":
                 m.time = self.snap(m.time, hit=m.action in ("flash", "rgb", "invert", "fade_white"))
@@ -339,8 +341,10 @@ class _Planner:
             if sd.span:
                 kind, _, n = sd.span.partition(":")
                 mid = self.S + (self.E - self.S) / 2
+                third = (self.E - self.S) / 3
                 a, b = {"tail": (self.E - float(n or 0), self.E), "head": (self.S, self.S + float(n or 0)),
-                        "half": (mid, -1.0), "firsthalf": (self.S, mid)}[kind]
+                        "half": (mid, -1.0), "firsthalf": (self.S, mid),
+                        "middle": (self.S + third, self.S + 2 * third)}[kind]
                 sd.start = self.S if a <= self.S + 0.01 else self.snap(max(self.S, a), bar=True)
                 sd.end = self.E if b < 0 or b >= self.E else self.snap(b, bar=True)
                 if sd.end >= self.E:
@@ -388,6 +392,13 @@ class _Planner:
                 continue
             last_start = sd.start
             kept.append(sd)
+        # Moments tied to a place in the music ("freeze every time the music stops").
+        from .direction import Moment
+
+        for sd in kept:
+            for a in sd.moments:
+                self.d.moments.append(Moment(time=sd.start, action=a, duration=1.0 if a in ("freeze", "slowmo") else 0.5))
+        kept = [sd for sd in kept if not sd.only_moments]
         kept.sort(key=lambda s: s.start)
 
         bounds = sorted({s.start for s in self.song.sections} | set(self.drops))
@@ -1037,6 +1048,8 @@ class _Planner:
                 c.speed = 0.5
             elif m.action == "reverse":
                 c.reverse = True
+            elif m.action == "fade_in":
+                self.add(cuts, f, "fade_in", max(4, int(round((m.duration or 1.0) * self.fps))), 1.0, "black")
             elif m.action in ("flash", "zoom", "shake", "rgb", "invert", "fade_white", "fade_black"):
                 frames = {"flash": 4, "rgb": 4, "invert": 2}.get(m.action, dur_f)
                 if m.action == "fade_black":

@@ -67,6 +67,7 @@ def normalise(prompt: str) -> str:
     t = re.sub(rf"\b(?:the\s+)?(?:first|opening)\s+{num}\s*{sec}", lambda m: f" @head{m.group(1)} ", t)
     t = re.sub(rf"\b(?:the\s+)?(?:first|opening)\s+{num}\s*{mins}", lambda m: f" @head{float(m.group(1)) * 60:g} ", t)
     t = re.sub(r"\b(?:the\s+)?first half(?: of the (?:song|edit|video))?\b", " @firsthalf ", t)
+    t = re.sub(r"\bin the middle\b(?! of the (?:song|edit|video))", " @middle ", t)
     t = re.sub(r"\b(?:the\s+)?(?:second|last|back) half(?: of the (?:song|edit|video))?\b|\bhalf ?way(?: through| point| mark)?\b"
                r"|\bmidway\b|\b(?:in )?the middle of the (?:song|edit|video)\b", " @half ", t)
     # absolute times written out
@@ -135,10 +136,12 @@ EFFECT_WORDS = [  # (pattern, effect)
 FAST = (r"fast(?:er)?|quick(?:er|ly)?|rapid(?:ly)?|hype(?:d)?|aggressive|crazy|insane|intense|chaotic|wild|"
         r"go(?:es)? off|go hard|goes hard|speed (?:it )?up|speeds up|pick(?:s)? (?:it |back )?up|picks back up|energetic|"
         r"high energy|frantic|flurry|barrage|hectic|nonstop|hard[- ]hitting|lit|snappy|choppy|rapid fire|"
-        r"go (?:all )?out|turn (?:it )?up|amp(?:ed)? (?:it )?up|go nuts|go ham|explode|hit hard|hits hard")
+        r"go (?:all )?out|turn (?:it )?up|amp(?:ed)? (?:it )?up|go nuts|go ham|explode|hit hard|hits hard|"
+        r"more cuts|cut more|more often|shorter cuts")
 SLOW = (r"slow(?:er)?(?! motion)|slow (?:it )?down|slows down|calm(?:er)?|chill(?:er)?|mellow|relax(?:ed|ing)?|gentle|"
         r"peaceful|soft(?:er)?|emotional|sad|melanchol(?:y|ic)|laid back|take it easy|long(?:er)? (?:shots|cuts|clips)|"
-        r"let it breathe|breathe|tone it down|calm it down|ease up|low energy|quiet")
+        r"let it breathe|breathe|tone it down|calm it down|ease up|low energy|quiet|mysterious|eerie|creepy|spooky|"
+        r"ominous|haunting|less cuts|fewer cuts|cut less|less often|longer cuts")
 NORMAL = (r"back to (?:normal|the flow|the groove|regular|how it was|the melody|the (?:main )?(?:beat|vibe|rhythm|pace))|"
           r"normal pace|regular pace|the flow|groove|steady|medium pace|go back|goes back|melody")
 HOLD = (r"still shot|one shot|single shot|\bhold(?:s|ing)?\b|held shot|panning shot|pan shot|one long shot|"
@@ -170,7 +173,9 @@ CONTENT = [  # (pattern, preferences, what to call it)
     (r"quiet scenes|calm scenes|emotional scenes|sad scenes|crying|tears|scenery|landscapes?|establishing shots|"
      r"the sky|clouds|peaceful scenes", {"motion": -1.0}, "calm scenes"),
     (r"bright(?:er)? (?:scenes|shots|parts|moments)|daylight|sunny", {"bright": 1.0}, "bright scenes"),
-    (r"dark(?:er)? (?:scenes|shots|parts|moments)?|night(?:time)?|shadows?|moody|gloomy|grim", {"bright": -1.0}, "dark scenes"),
+    (r"dark(?:er)? (?:scenes|shots|parts|moments)?|night(?:time)?|shadows?|moody|gloomy|grim|mysterious|eerie|creepy|spooky",
+     {"bright": -1.0}, "dark scenes"),
+    (r"no movement|not moving|still shots|static shots|calm shots|nothing moving", {"motion": -1.0}, "still, calm shots"),
     (r"colou?rful|vibrant|saturated|neon", {"sat": 1.0}, "colourful shots"),
     (r"red (?:scenes|shots|parts)?|bloody|blood", {"hue": 0.0}, "red shots"),
     (r"blue (?:scenes|shots|parts)?|ocean|water|underwater|ice|icy", {"hue": 220.0}, "blue shots"),
@@ -400,6 +405,16 @@ def read_instruction(text: str) -> Instruction:
             ins.drum_fx[eff] = drum
             take(m)
 
+    m = re.search(rf"\b(?:every time|whenever|each time|when(?:ever)? the)\s+(?:the\s+)?((?:{DRUM_ALT}))\s+(?:hits?|lands?|plays?|kicks?)\b"
+                  rf",?\s*(?:i want (?:a |some )?|add (?:a )?|put (?:a )?|do (?:a )?|give (?:it )?(?:a )?)?([a-z ]+)", work)
+    if m:
+        for rx, eff in EFFECT_RX:
+            e = rx.search(m.group(2))
+            if e:
+                drum = _drum_of(m.group(1))
+                ins.drum_fx[eff] = "kick" if drum == "drop" else drum
+                take(m)
+                break
     # --- where -------------------------------------------------------------
     m = re.search(rf"\b(?:until|till|til|up to|up until|before|by|ending at)\s+(?:about |around )?({T})(?![~\d])", work)
     if m and len(TIME_RE.findall(work)) == 1:
@@ -410,7 +425,7 @@ def read_instruction(text: str) -> Instruction:
             ins.times.append(_secs(m.group(2)))
         take(m)
         break
-    m = re.search(r"@(tail|head)(\d+(?:\.\d+)?)|@(firsthalf|half)", work)
+    m = re.search(r"@(tail|head)(\d+(?:\.\d+)?)|@(firsthalf|half|middle)", work)
     if m:
         ins.span = f"{m.group(1)}:{m.group(2)}" if m.group(1) else m.group(3)
         take(m)
@@ -429,7 +444,7 @@ def read_instruction(text: str) -> Instruction:
                 break
     if ins.cue and ins.occurrence is None and re.search(
             r"\b(?:each|every|all(?: the)?|both)\s+(?:\w+\s+)?(?:drops?|chorus(?:es)?|verses?|solos?|fills?|stops?|build ?ups?)\b",
-            text):
+            text) or re.search(r"\b(?:every time|whenever|each time|any time)\b", text):
         ins.occurrence = 0  # every time it happens
     for m in SECTION_RX.finditer(work):
         # "the build up" is a place; "build up the tension" is an instruction (handled by RAMP)
@@ -513,7 +528,7 @@ def read_instruction(text: str) -> Instruction:
 
     # moments: "freeze frame", "fade to black", "flash" at a time or at the end
     for word, action in (("freeze", "freeze"), ("fade to white", "fade_white"), ("fade (?:to black|out)", "fade_black"),
-                         ("fade", "fade_black")):
+                         ("fade[ -]?in|fades? (?:in|from black)", "fade_in"), ("fade", "fade_black")):
         m = re.search(rf"\b{word}\w*(?: frames?)?", work)
         if m and not _negated(work, m.start()):
             ins.moments.append(action)
@@ -589,6 +604,16 @@ def read_instruction(text: str) -> Instruction:
 # --------------------------------------------------------------------------- #
 GLOBAL_HINTS = [
     # (pattern, what it does, note)
+    (r"\b(?:sync|synced|match|follow|flow with|move with|vibe with|cut to|cuts? on|feel)\b[\w\s]{0,25}\b(?:the )?"
+     r"(?:music|song|beat|rhythm|energy|groove)\b|\bon beat\b|\bbeat ?sync(?:ed)?\b", "follow", "following the music (always on)"),
+    (r"\b(?:lots of|more|many|smooth|cool|sick) transitions\b|\btransitions? between\b", "transitions",
+     "transitions: soft blurs into each part, white fades into the drops"),
+    (r"\bjump cuts\b|\bhard cuts\b|\bno transitions\b|\bstraight cuts\b", "hard_cuts", "hard cuts, no transitions"),
+    (r"\bepic\b|\blegendary\b|\bheroic\b|\bhype trailer\b", "epic", "epic: a freeze before the drop, white flash into it"),
+    (r"\banime (?:opening|op|intro)\b|\bopening sequence\b|\b(?:op|ed) style\b", "opening",
+     "anime opening feel: punchy cuts on the drum fills, a freeze before the drop"),
+    (r"\bunder control\b|\bdon't overdo it\b|\bnot too much\b|\btasteful\b|\bnot over the top\b", "simple",
+     "toned down: lighter effects"),
     (r"\bphonk\b", "phonk", "phonk edit: heavy shake and zooms on the bass, cuts on the kick in the drop"),
     (r"\bamvs?\b|\bgmvs?\b|\b20(?:0\d|1[0-3])\b|\bold (?:school )?(?:youtube|amv|edit)s?\b|\bnostalgi\w+\b|\bclassic edit\b",
      "amv", "2000s AMV feel: glow, ghost trails, white flashes into the drop"),
@@ -640,7 +665,8 @@ AMOUNT_WORD = {"none": "no", "less": "fewer", "light": "a few", "more": "more", 
 DRUM_WORD = {"snare": "snare", "kick": "kick", "hits": "drum hit", "big": "big hit", "bar": "bar", "beat": "beat"}
 
 
-MOMENT_WORD = {"fade_black": "fade to black", "fade_white": "fade to white", "freeze": "freeze frame"}
+MOMENT_WORD = {"fade_black": "fade to black", "fade_white": "fade to white", "freeze": "freeze frame",
+               "fade_in": "fade in from black"}
 
 
 def _effects_note(effects: dict[str, str]) -> list[str]:
@@ -788,6 +814,19 @@ def _apply_hint(d: Direction, hint: str) -> None:
         for lab in ("build", "drop"):
             if lab not in d.velocity:
                 d.velocity.append(lab)
+    elif hint == "transitions":
+        st.blur_into_sections = True
+        st.white_into_drop = True
+    elif hint == "hard_cuts":
+        st.blur_into_sections = False
+        st.white_into_drop = False
+    elif hint == "epic":
+        st.freeze_before_drop = True
+        st.white_into_drop = True
+    elif hint == "opening":
+        st.cut_on_fills = True
+        st.freeze_before_drop = True
+        st.flash_top = max(st.flash_top, 0.08)
     elif hint == "freeze_drop":
         st.freeze_before_drop = True
     elif hint == "white_drop":
@@ -874,9 +913,10 @@ def _apply_scoped(d: Direction, ins: Instruction, labels: list[str], notes: list
             d.prefer.setdefault(lab, {})["camera_" + ins.camera] = 1.0
         said.append(f"{ins.camera} shots")
     if ins.moments and not prefix:
-        # "end it on a freeze frame" without a place
+        # "end it on a freeze frame" without a place ("fade in" = at the start)
         for a in ins.moments:
-            d.moments.append(Moment(time=-1.0, action=a, duration=1.5 if a == "fade_black" else 1.0))
+            d.moments.append(Moment(time=-2.0 if a == "fade_in" else -1.0, action=a,
+                                    duration=1.5 if a == "fade_black" else 1.0))
         said.append("ending: " + ", ".join(MOMENT_WORD.get(a, a) for a in ins.moments))
     if said:
         notes.append(prefix + ", ".join(s for s in said if s))
@@ -909,6 +949,21 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
                 d.moments.append(Moment(time=-1.0, action=a, duration=min(float(n), 8.0) if a == "fade_black" else float(n)))
             notes.append(f"⏱ last {n} s: " + ", ".join(MOMENT_WORD.get(a, a) for a in ins.moments))
             return
+    if "fade_in" in ins.moments and not times:  # "start with a fade in": the start of the edit
+        d.moments.append(Moment(time=-2.0, action="fade_in", duration=1.0))
+        notes.append("⏱ the start: fade in from black")
+        ins.moments = [a for a in ins.moments if a != "fade_in"]
+        if not (ins.moments or ins.pace is not None or ins.hold or ins.sync or ins.prefer or ins.cut_rate
+                or ins.effects or ins.ramp or ins.velocity):
+            return
+    if ins.moments and ins.cue and not times and not (ins.pace is not None or ins.hold or ins.sync or ins.prefer
+                                                       or ins.cut_rate or ins.effects or ins.ramp or ins.velocity):
+        # "freeze every time the music stops", "flash when the solo starts": moments at a heard moment
+        sd = SectionDirection(start=-1.0, end=-1.0, cue=ins.cue, occurrence=ins.occurrence, note=ins.text.strip(),
+                              moments=list(ins.moments), only_moments=True)
+        d.sections.append(sd)
+        notes.append(f"⏱ {_where(ins, None)}: " + ", ".join(MOMENT_WORD.get(a, a) for a in ins.moments))
+        return
     if not ins.understood:
         return
     sd = SectionDirection(start=times[0] if times else -1.0, end=times[1] if len(times) > 1 else -1.0,
@@ -1001,7 +1056,7 @@ def _where(ins: Instruction, window) -> str:
     if ins.span:
         kind, _, n = ins.span.partition(":")
         parts.append({"tail": f"last {n} s", "head": f"first {n} s", "half": "second half",
-                      "firsthalf": "first half"}[kind])
+                      "firsthalf": "first half", "middle": "the middle"}[kind])
     if ins.cue:
         if ins.cue.startswith("sec:"):
             lab = ins.cue[4:]
@@ -1009,7 +1064,8 @@ def _where(ins: Instruction, window) -> str:
         else:
             name = CUE_NAMES.get(ins.cue, ins.cue) if ins.cue != "end" else "the end"
         if ins.occurrence == 0:
-            name = "every " + ("drop" if ins.cue == "drop" else name)
+            name = ("every " + ("drop" if ins.cue == "drop" else name) if ins.cue == "drop" or ins.cue.startswith("sec:")
+                    else f"{name} (every time)")
         elif ins.occurrence:
             name = "drop" if ins.cue == "drop" else name
             name = {1: "first ", 2: "second ", 3: "third ", 4: "fourth ", -1: "last "}[ins.occurrence] + name

@@ -125,3 +125,24 @@ def test_unclear_parts_are_reported(prompt):
 def test_every_time_it_happens():
     d = read("build up the tension with faster and faster cuts before each drop")
     assert [(s.cue, s.occurrence, s.ramp) for s in d.sections] == [("predrop", 0, True)]
+
+
+@pytest.mark.parametrize("prompt, note", [
+    ("sync everything to the music", "following the music"),
+    ("jump cuts", "hard cuts"),
+    ("lots of transitions", "transitions"),
+    ("I want it to feel epic", "epic"),
+    ("make it look like an anime opening", "anime opening"),
+    ("keep it under control", "toned down"),
+    ("more cuts", "faster cuts"),
+    ("fewer cuts in the verse", "verse: slower cuts"),
+    ("cut on every downbeat", "a cut every bar"),
+    ("every time the snare hits flash", "flashes on every snare"),
+    ("speed it up in the middle", "the middle: faster cuts"),
+    ("make the beginning mysterious", "intro: dark scenes"),
+    ("start with a fade in", "fade in from black"),
+    ("freeze every time the music stops", "music stops (every time): freeze frame"),
+])
+def test_everyday_phrasing(prompt, note):
+    d = read(prompt)
+    assert not d.unclear and any(note in n for n in d.notes), d.notes

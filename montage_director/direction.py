@@ -18,7 +18,7 @@ SECTION_LABELS = ("intro", "verse", "build", "drop", "breakdown", "outro")
 EFFECTS = ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert")
 CUT_CHOICES = (0.5, 1.0, 2.0, 4.0, 8.0)  # beats per cut
 MOMENT_ACTIONS = ("flash", "freeze", "zoom", "shake", "rgb", "invert", "slowmo",
-                  "reverse", "fade_white", "fade_black", "cut")
+                  "reverse", "fade_white", "fade_black", "fade_in", "cut")
 
 
 def _fx(**kw) -> dict[str, float]:
@@ -131,6 +131,8 @@ class SectionDirection:
     velocity: bool = False      # velocity edit: fast clips that slow down on the big beats
     drum_fx: dict[str, str] = field(default_factory=dict)   # effect -> drum it lands on ("snare", "kick", ...)
     what: str = ""              # how the free reader summed it up, for the timeline under the player
+    moments: list[str] = field(default_factory=list)  # moments at the start of this place ("freeze when it stops")
+    only_moments: bool = False  # the section is just a place for its moments, not a change of pace
 
 
 @dataclass
@@ -218,6 +220,8 @@ def _cut_rate(clause: str) -> float | None:
     """Beats per cut from phrases like 'every 2 beats', 'every other beat', 'every bar', 'twice a beat'."""
     if re.search(r"\b(twice (a|per|every) beat|half[- ]beats?|double[- ]time|every half beat)\b", clause):
         return 0.5
+    if re.search(r"\b(?:every|each|on (?:every|each|the)) downbeats?\b", clause):
+        return 4.0
     m = re.search(r"\b(?:every|each|on (?:every|each|the))\s+(\d+|one|two|three|four|eight|other|single)?\s*"
                   r"(beat|beats|bar|bars|measure|measures)\b", clause)
     if not m:
