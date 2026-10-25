@@ -21,7 +21,7 @@ jobs:
       - name: Set version
         shell: bash
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then V="${GITHUB_REF_NAME#v}"; else V=$(python -c "import montage_director as m; print(m.__version__)"); fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then V=$(echo "$GITHUB_REF_NAME" | sed -E "s/^[vV.]+//"); else V=$(python -c "import montage_director as m; print(m.__version__)"); fi
           echo "::notice::Building version $V"
           echo "VERSION=$V" >> "$GITHUB_ENV"
           printf '"""Montage Director: AI-assisted beat-synced AMV / GMV / montage editor."""\n\n__version__ = "%s"\n' "$V" > montage_director/__init__.py
@@ -73,7 +73,7 @@ jobs:
           python-version: "3.12"
       - name: Set version
         run: |
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then V="${GITHUB_REF_NAME#v}"; else V=$(python -c "import montage_director as m; print(m.__version__)"); fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then V=$(echo "$GITHUB_REF_NAME" | sed -E "s/^[vV.]+//"); else V=$(python -c "import montage_director as m; print(m.__version__)"); fi
           echo "::notice::Building version $V"
           echo "VERSION=$V" >> "$GITHUB_ENV"
           printf '"""Montage Director: AI-assisted beat-synced AMV / GMV / montage editor."""\n\n__version__ = "%s"\n' "$V" > montage_director/__init__.py
