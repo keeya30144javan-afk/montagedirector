@@ -158,7 +158,10 @@ class _Planner:
     # ----- the director's timeline -------------------------------------------- #
     def cue_events(self, kind: str) -> list[tuple[float, float | None, list | None]]:
         if kind == "drop":
-            return [(t, None, None) for t in self.drops]
+            if self.drops:
+                return [(t, None, None) for t in self.drops]
+            # No dramatic drop in this song: "when the bass drops" means the beat coming in.
+            return [(e["end"], None, None) for e in self.song.events_of("intro") if e.get("end")]
         evs = [(e["time"], e.get("end"), e.get("times")) for e in self.song.events_of(kind)]
         if kind == "intro" and not evs and self.drops:
             evs = [(0.0, self.drops[0], None)]
@@ -189,8 +192,10 @@ class _Planner:
                 elif sd.start >= 0:
                     sd.start = self.snap(sd.start, bar=True)
                 else:
-                    name = EVENT_LABELS.get(sd.cue, sd.cue)
-                    self.warnings.append(f"Couldn't hear the {name} in this song. Add a time, like \"at 2:50 ...\".")
+                    name = {"drop": "bass drop"}.get(sd.cue, EVENT_LABELS.get(sd.cue, sd.cue))
+                    tip = (" or right-click the timeline and choose Mark the drop here" if sd.cue == "drop" else "")
+                    self.warnings.append(f"Couldn't hear the {name} in this song, so that instruction was skipped. "
+                                         f"Add a time, like \"at 0:23 ...\"{tip}.")
                     continue
             elif sd.start >= 0:
                 sd.start = self.snap(sd.start, bar=True)

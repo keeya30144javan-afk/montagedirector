@@ -256,3 +256,14 @@ def test_tapped_cuts_snap_to_hits_and_replace_auto_cuts(band_song, media):
     assert early(auto) == early(plan), "cuts far from the taps must not change"
     proj.clear_taps()
     assert proj.make_plan().cuts[0].f0 == 0 and not proj.direction.tap_cuts
+
+
+def test_bass_drops_falls_back_to_the_beat_coming_in(band_song, media):
+    song, footage = analyze_song(band_song), analyze_footage([media])
+    song.drops = []  # a song where the beat comes in gradually: no dramatic drop
+    d = read_prompt("a still shot during the intro and as soon as the bass drops the action should happen",
+                    style_direction("hype"))
+    plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=14))
+    assert not plan.warnings or "bass drop" not in plan.warnings[0]
+    intro_end = song.events_of("intro")[0]["end"]
+    assert any(abs(c.f0 / 24 - intro_end) < 0.1 for c in plan.cuts), "the action starts when the beat comes in"
