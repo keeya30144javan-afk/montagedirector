@@ -141,6 +141,8 @@ musical moments it hears: "when the bass drops", "when the drums get faster", "w
 "the hard hits", "when the vocals come in", "before the drop", "when the last note rings".<br><br>
 <b>Look and shape:</b> black and white, VHS, Y2K, film / trailer, sad, dreamy, glow, ghost trails, letterbox,
 vertical / TikTok, square; "no repeats".<br><br>
+The free director picks shots by how they look and move (action, calm, dark, bright, colour), not by who
+is in them: to ask for a character by name ("Vegeta powering up"), use the AI Director.<br><br>
 Anything it doesn't understand is listed under the preview as <i>Didn't catch</i>. The AI Director
 understands any wording."""
 
