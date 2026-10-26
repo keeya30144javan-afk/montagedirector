@@ -247,7 +247,7 @@ def select_shots(footage: Footage, limit: int, ids: set[int] | None = None) -> l
     else:
         rest = [s for s in shots if s not in picked]
         idx = np.linspace(0, len(rest) - 1, max(0, limit - len(picked))).round().astype(int) if rest else []
-        picked = sorted(picked + [rest[i] for i in sorted(set(int(i) for i in idx))], key=lambda s: s.id)
+        picked = sorted(picked + [rest[i] for i in sorted({int(i) for i in idx})], key=lambda s: s.id)
     return picked
 
 

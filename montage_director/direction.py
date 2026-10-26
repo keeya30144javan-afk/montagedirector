@@ -207,10 +207,6 @@ _SLOWER = ("slow", "slower", "chill", "calm", "emotional", "sad", "soft", "gentl
 _TIME = re.compile(r"\b(\d{1,2}):(\d{2})\b")
 
 
-def _has(text: str, words) -> bool:
-    return any(re.search(r"\b" + re.escape(w) + r"\b", text) for w in words)
-
-
 def _negated(text: str, word: str) -> bool:
     return bool(re.search(r"\b(no|without|less|fewer|don'?t use|stop|zero)\s+(\w+\s+)?" + word, text))
 

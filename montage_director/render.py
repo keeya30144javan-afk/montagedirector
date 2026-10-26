@@ -114,10 +114,6 @@ def _even(v: float) -> int:
     return max(2, int(round(v / 2)) * 2)
 
 
-def _between(windows: list[tuple[int, int]], var: str = "n") -> str:
-    return "+".join(f"between({var},{a},{b})" for a, b in windows) or "0"
-
-
 def segment_filter(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int, idx: int = 0) -> str:
     """Build the filtergraph for one cut. Input is [idx:v] (and [idx+1:v] for a transition),
     output is [v{idx}] with exactly cut.frames frames (so cuts can be joined in one ffmpeg run)."""

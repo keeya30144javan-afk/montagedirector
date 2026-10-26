@@ -210,8 +210,6 @@ class Project:
         self.direction.regions.append(sd)
         return notes
 
-    TAP_KINDS = {"cut", "flash", "zoom", "shake", "drop", *(f"scene{k}" for k in "123456789")}
-
     def apply_taps(self) -> None:
         """Put the user's taps into the current direction (replacing earlier taps)."""
         if self.direction is None:

@@ -282,7 +282,8 @@ class ShotPicker(QDialog):
         menu = QMenu(self)
         fav = menu.addAction("★ Favourite (use it more, at the big moments)")
         ban = menu.addAction("✕ Never use this shot")
-        clear = menu.addAction("Clear the mark") if self._mark(sid) else None
+        if self._mark(sid):
+            menu.addAction("Clear the mark")
         chosen = menu.exec(self.grid.viewport().mapToGlobal(pos))
         if chosen is None:
             return
@@ -868,7 +869,7 @@ class MainWindow(QMainWindow):
 
         # Video
         self.video_frame = QFrame()
-        self.video_frame.setStyleSheet(f"background: black; border-radius: 8px;")
+        self.video_frame.setStyleSheet("background: black; border-radius: 8px;")
         self.video_stack = QStackedLayout(self.video_frame)
         self.placeholder = QLabel("Add footage and a song, describe your idea,\nthen press Make Edit.")
         self.placeholder.setAlignment(Qt.AlignCenter)

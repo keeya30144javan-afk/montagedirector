@@ -244,7 +244,7 @@ class _Planner:
         f = self.features.get(s.id)
         if f is None:
             return 0.0
-        pref = {k: v for k, v in pref.items()}
+        pref = dict(pref)
         score = 0.0
         for k in ("bright", "sat", "warm", "motion"):
             if k in pref:

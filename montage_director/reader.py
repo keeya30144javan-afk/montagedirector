@@ -90,7 +90,7 @@ def normalise(prompt: str) -> str:
     t = re.sub(r"\b(?:the\s+)?(?:second|last|back) half(?: of the (?:song|edit|video))?\b|\bhalf ?way(?: through| point| mark)?\b"
                r"|\bmidway\b|\b(?:in )?the middle of the (?:song|edit|video)\b", " @half ", t)
     # absolute times written out
-    t = re.sub(rf"\b(\d{{1,2}})\s*(?:minutes?|mins?|m)\s*(?:and\s+)?(\d{{1,2}})(?:\s*(?:seconds?|secs?|s)\b)?",
+    t = re.sub(r"\b(\d{1,2})\s*(?:minutes?|mins?|m)\s*(?:and\s+)?(\d{1,2})(?:\s*(?:seconds?|secs?|s)\b)?",
                lambda m: f"{int(m.group(1))}:{int(m.group(2)):02d}", t)
     t = re.sub(rf"\b(\d{{1,2}})\s*{mins}(?:\s+mark)?", lambda m: f"{int(m.group(1))}:00", t)
     t = re.sub(rf"(?<![\d:@a-z])(\d{{1,4}}(?:\.\d)?)\s*{sec}(?:\s+mark)?(?:\s+in)?",
@@ -322,9 +322,7 @@ def _split(text: str) -> list[str]:
             merged[-1] = merged[-1] + " " + p
             continue
         if merged and not TIME_RE.search(p) and not _has_scope(p) and (
-                _only_scope(merged[-1]) or (asks and (TIME_RE.search(merged[-1]) or _cue_only(merged[-1])))):
-            merged[-1] = merged[-1] + " " + p
-        elif merged and _only_scope(merged[-1]) and not TIME_RE.search(p):
+                _only_scope(merged[-1]) or (asks and (TIME_RE.search(merged[-1]) or _cue_only(merged[-1])))) or merged and _only_scope(merged[-1]) and not TIME_RE.search(p):
             merged[-1] = merged[-1] + " " + p
         else:
             merged.append(p)
@@ -437,12 +435,18 @@ class Instruction:
     drop_at: float | None = None    # "till 0:17 when the beat drops": the drop is where this ends
     understood: bool = False
 
+    @property
+    def shapes_cuts(self) -> bool:
+        """Says something about the cuts themselves (pace, holds, sync, what to show, build-ups)."""
+        return bool(self.pace is not None or self.hold or self.sync or self.prefer or self.cut_rate is not None
+                    or self.ramp or self.velocity)
+
 
 def _amount(before: str) -> str:
     """How much of an effect, from the words just before it."""
     tail = before[-40:]
     if re.search(rf"\b{NONE}\b(?:\s+\w+){{0,3}}\s*$", tail):
-        if re.search(rf"\b(?:not|don't) (?:too|so|that) (?:many|much)\b(?:\s+\w+){{0,2}}\s*$", tail):
+        if re.search(r"\b(?:not|don't) (?:too|so|that) (?:many|much)\b(?:\s+\w+){0,2}\s*$", tail):
             return "less"
         if re.search(r"\b(?:no|not|don't|never|without|zero|nothing|none|hate|avoid|skip|remove|get rid of|lose the|stop)"
                      r"\b(?:\s+(?:any|the|more|use|using|add|adding|put|putting|want|like|with|those|these|of))*\s*$", tail) \
@@ -461,7 +465,7 @@ def _strength(text: str, start: int, end: int) -> float:
     before, after = text[max(0, start - 30):start], text[end:end + 25]
     if re.search(rf"\b{MILD}\s*$", before) or re.search(r"^\s*(?:ish|-ish)\b", after):
         return 0.5
-    if re.search(rf"\b{STRONG}\s*$", before) or re.search(rf"^\s*(?:super|as hell|than ever|and then some|as possible)\b", after):
+    if re.search(rf"\b{STRONG}\s*$", before) or re.search(r"^\s*(?:super|as hell|than ever|and then some|as possible)\b", after):
         return 2.0
     return 1.0
 
@@ -683,8 +687,8 @@ def read_instruction(text: str) -> Instruction:
         take(m)
 
     # pace (after effects and content so "slow motion" / "fire" aren't read as pace)
-    fast = [m for m in FAST_RX.finditer(work)]
-    slow = [m for m in SLOW_RX.finditer(work)]
+    fast = list(FAST_RX.finditer(work))
+    slow = list(SLOW_RX.finditer(work))
     normal = NORMAL_RX.search(work)
     if re.search(r"\b(?:the |this |my )?(?:song|music|track|beat|instrumental)(?:'s| is| has| feels| sounds| got)\b|"
                  r"\bit'?s an? [\w\s-]{0,25}(?:song|track|beat)\b", text):
@@ -857,7 +861,6 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
         d.notes.append(notes_early)
     text = normalise(prompt)
     notes: list[str] = list(d.notes[-len(texts):]) if texts else []
-    st = d.style
     every = list(SECTION_LABELS)
 
     # Whole-edit flavour words first (genre / era / look / shape).
@@ -1168,8 +1171,7 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
     # single moments: "freeze at 1:05", "flash at 0:42", "fade to black at the end"
     point_fx = {a: 0.0 for a in ins.moments}
     if not window and not ins.span and (times or ins.cue == "end") and len(times) <= 1 and (ins.moments or ins.effects) \
-            and not (ins.pace is not None or ins.hold or ins.sync or ins.prefer or ins.cut_rate or ins.ramp
-                     or ins.velocity or (ins.cue not in (None, "end", "ringout") and not times)):
+            and not (ins.shapes_cuts or (ins.cue not in (None, "end", "ringout") and not times)):
         acts = list(point_fx) + [e for e, amt in ins.effects.items() if amt != "none"]
         t = times[0] if times else -1.0
         for a in acts:
@@ -1177,8 +1179,7 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
                                     duration=1.0 if a in ("freeze", "slowmo", "shake") else (1.5 if a == "fade_black" else 0.0)))
         notes.append(f"⏱ {_mmss(t) if t >= 0 else 'the end'}: " + ", ".join(MOMENT_WORD.get(a, a) for a in acts))
         return
-    if ins.span and ins.moments and not (ins.pace is not None or ins.hold or ins.sync or ins.prefer or ins.cut_rate
-                                         or ins.effects or ins.ramp or ins.velocity):
+    if ins.span and ins.moments and not (ins.shapes_cuts or ins.effects):
         kind, _, n = ins.span.partition(":")
         if kind == "tail":
             for a in ins.moments:
@@ -1189,11 +1190,9 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
         d.moments.append(Moment(time=-2.0, action="fade_in", duration=1.0))
         notes.append("⏱ the start: fade in from black")
         ins.moments = [a for a in ins.moments if a != "fade_in"]
-        if not (ins.moments or ins.pace is not None or ins.hold or ins.sync or ins.prefer or ins.cut_rate
-                or ins.effects or ins.ramp or ins.velocity):
+        if not (ins.moments or ins.shapes_cuts or ins.effects):
             return
-    if ins.moments and ins.cue and not times and not (ins.pace is not None or ins.hold or ins.sync or ins.prefer
-                                                       or ins.cut_rate or ins.effects or ins.ramp or ins.velocity):
+    if ins.moments and ins.cue and not times and not (ins.shapes_cuts or ins.effects):
         # "freeze every time the music stops", "flash when the solo starts": moments at a heard moment
         sd = SectionDirection(start=-1.0, end=-1.0, cue=ins.cue, occurrence=ins.occurrence, note=ins.text.strip(),
                               moments=list(ins.moments), only_moments=True)

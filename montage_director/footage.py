@@ -214,10 +214,6 @@ def _group_scenes(footage: Footage, threshold: float = 14.0) -> None:
         s.group = roots.setdefault(find(s.id), len(roots))
 
 
-def scene_count(footage: Footage) -> int:
-    return len({s.group for s in footage.usable_shots()})
-
-
 def _analyze_one(path: Path, cancel, progress) -> tuple[Source, list[dict]]:
     info = probe(path)
     if not info.has_video:
@@ -375,17 +371,6 @@ def _shift(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
     fy = y + sub(corr[(y - 1) % h, x], corr[y, x], corr[(y + 1) % h, x])
     fx = x + sub(corr[y, (x - 1) % w], corr[y, x], corr[y, (x + 1) % w])
     return float(fy if fy <= h / 2 else fy - h), float(fx if fx <= w / 2 else fx - w)
-
-
-def _zoomed(a: np.ndarray, factor: float) -> np.ndarray:
-    """Centre crop by `factor` scaled back to size (a cheap 'zoomed in' version)."""
-    h, w = a.shape
-    ch, cw = int(h / factor), int(w / factor)
-    y0, x0 = (h - ch) // 2, (w - cw) // 2
-    crop = a[y0:y0 + ch, x0:x0 + cw]
-    yi = (np.arange(h) * ch / h).astype(int)
-    xi = (np.arange(w) * cw / w).astype(int)
-    return crop[yi][:, xi]
 
 
 def _shot_details(seg: list[dict], m: np.ndarray, step: float) -> dict:
