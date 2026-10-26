@@ -202,3 +202,12 @@ def test_until_after_a_comma_belongs_to_the_held_shot():
     assert [(s.start, s.end, s.hold) for s in d.sections] == [(0.0, 17.0, True)]
     d = read("at the beginning hold one shot until 0:17 when the beat drops. from 0:00 to 0:17 show the feather wings")
     assert [(s.hold, s.keep_cuts) for s in d.sections] == [(True, False), (False, True)], "what to show is a layer"
+
+
+def test_fewer_cuts_and_no_reuse_phrasing():
+    d = read("do not re use scenes, dont use so many cuts, have the scenes and fights last longer before going to the "
+             "next one", "cinematic")
+    assert d.repeats == "never" and not d.unclear
+    assert d.style.cut_every["drop"] > STYLES["cinematic"].cut_every["drop"]
+    for p in ("play longer scenes and use less cuts", "longer scenes, less cuts", "too many cuts"):
+        assert read(p, "cinematic").style.cut_every["verse"] > STYLES["cinematic"].cut_every["verse"], p

@@ -139,7 +139,9 @@ FAST = (r"fast(?:er)?|quick(?:er|ly)?|rapid(?:ly)?|hype(?:d)?|aggressive|crazy|i
         r"go (?:all )?out|turn (?:it )?up|amp(?:ed)? (?:it )?up|go nuts|go ham|explode|hit hard|hits hard|hit harder|hits harder|harder|"
         r"more cuts|cut more|more often|shorter cuts")
 SLOW = (r"slow(?:er)?(?! motion)|slow (?:it )?down|slows down|calm(?:er)?|chill(?:er)?|mellow|relax(?:ed|ing)?|gentle|"
-        r"peaceful|soft(?:er)?|emotional|sad|melanchol(?:y|ic)|laid back|take it easy|long(?:er)? (?:shots|cuts|clips)|"
+        r"peaceful|soft(?:er)?|emotional|sad|melanchol(?:y|ic)|laid back|take it easy|long(?:er)? (?:shots|cuts|clips|scenes|takes)|play (?:out )?longer|(?:scenes?|shots?|clips?) (?:play|last|run) longer|"
+        r"last longer|stay (?:on screen )?longer|hold (?:them |it |each (?:one |shot )?)?longer|"
+        r"(?:not|don't|no) (?:use |have |do )?(?:so|too|as) many cuts|too many cuts|less cutting|cut less often|"
         r"let it breathe|breathe|tone it down|calm it down|ease up|low energy|quiet|mysterious|eerie|creepy|spooky|"
         r"ominous|haunting|less cuts|fewer cuts|cut less|less often|longer cuts|drawn[- ]out|play out|let (?:them|it|the "
         r"(?:fights?|shots?|scenes?)) play")
@@ -213,6 +215,8 @@ final screen bunch frame frames image picture whole entire every each other way 
 focus focused focuses focusing one two three single just only beat beats bass include includes including packed
 shows showing drawn real vibe vibes juxtaposition contrast subject matter liter literal literally kinda pretty fun
 crazy insane wild chill hype hyped intense calm epic hard harder go goes going here there this that
+dont doesnt wont cant isnt not never no any anything nothing lot lots alot thing stuff kind sure okay maybe
+longer shorter play plays playing less fewer more
 quick quicker slower faster cool sick nice good great best better bad kind sort feel""".split())
 FILLER = re.compile(r"\b(i want|i'd like|i would like|i need|please|make it|make the|make this|the edit|this edit|edit|it|"
                     r"should|would|be|have|has|to|of|the|a|an|and|with|for|in|on|is|are|that|this|my|me|i|you|"
@@ -260,7 +264,7 @@ def _split(text: str) -> list[str]:
         if not sentence.strip():
             continue
         # commas (not inside "1,2,3,4"), "then", "but", "after that", "while"
-        parts = re.split(r"(?<!\d),(?!\d)|,(?=\s)|\bthen\b|\bbut\b|\bafter that\b|\bfollowed by\b|\bnext\b", sentence)
+        parts = re.split(r"(?<!\d),(?!\d)|,(?=\s)|\bthen\b|\bbut\b|\bafter that\b|\bfollowed by\b", sentence)
         pieces: list[str] = []
         for part in parts:
             # a new time inside the piece starts a new instruction ("slow down at 1:20 and speed up at 1:45")
@@ -668,7 +672,8 @@ def read_instruction(text: str) -> Instruction:
         ins.hold = True  # "a shot with as many characters as possible for the last part"
         ins.still = "still" in text
     # Names and things to look for in the shot descriptions ("vegeta", "nappa", "spaceship")
-    left = [w for w in re.findall(r"[a-z][a-z'-]{2,}", FILLER.sub(" ", work)) if w not in QUERY_SKIP]
+    left = [w for w in re.findall(r"[a-z][a-z'-]{2,}", FILLER.sub(" ", work))
+            if w not in QUERY_SKIP and "'" not in w and not w.endswith("n't")]  # not "don't", "it's"
     if left:
         ins.prefer["_query"] = sorted(set(left))[:6]
     ins.people = bool(re.search(r"\b(?:characters?|everyone|everybody|the (?:whole )?(?:crew|team|squad|gang|cast|group)|"
@@ -822,6 +827,7 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
     elif re.search(r"\bsquare\b|\binstagram post\b|\b1:1\b", text):
         d.aspect = "1:1"
         notes.append("square 1:1")
+    text = re.sub(r"\bre[- ](use|using|used|peat|peats|peating)\b", r"re\1", text)  # "re use scenes"
     if re.search(r"\b(?:no|don't|never|without|avoid|stop|zero)\b[\w\s']{0,20}\b(?:repeat|repeats|repeating|reuse|reusing|"
                  r"duplicate|duplicates|same (?:clip|scene|shot)s?)\b|\bunique (?:clips|scenes|shots)\b|\beach (?:clip|scene|shot) once\b",
                  text):
