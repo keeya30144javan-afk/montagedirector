@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QGridLayout, QHBoxLayout, QListWidget,
-                               QListWidgetItem, QMenu, QPushButton, QSizePolicy, QWidget)
+                               QLabel, QListWidgetItem, QMenu, QPushButton, QSizePolicy, QWidget)
 
 from ..direction import STYLES
 from . import theme
@@ -556,3 +556,60 @@ class Timeline(QWidget):
             x = self._x(self.full_a + self.position, w)
             p.setPen(QPen(QColor(theme.TEXT), 2))
             p.drawLine(QPointF(x, top - 2), QPointF(x, top + wave_h + 2))
+
+
+class TipBubble(QWidget):
+    """A small speech bubble under a text box: how the app reads what you're typing, plus tips."""
+
+    def __init__(self):
+        super().__init__()
+        self.label = QLabel(self)
+        self.label.setWordWrap(True)
+        self.label.setTextFormat(Qt.RichText)
+        self.label.setStyleSheet(f"color: {theme.TEXT}; font-size: 12px; background: transparent;")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.hide()
+
+    def show_help(self, reading: list[str], tips: list[str]) -> None:
+        if not reading and not tips:
+            self.hide()
+            return
+        import html
+
+        parts = []
+        if reading:
+            parts.append("<b>I'll do:</b> " + " · ".join(html.escape(r) for r in reading))
+        for t in tips:
+            parts.append(f"<span style='color:{theme.WARN}'>💡</span> " + html.escape(t))
+        self.label.setText("<br>".join(parts))
+        self.show()
+        self._layout()
+
+    def _layout(self):
+        w = max(80, self.width() - 22)
+        self.label.setFixedWidth(w)
+        self.label.adjustSize()
+        self.label.move(11, 13)
+        self.setMinimumHeight(self.label.height() + 22)
+        self.updateGeometry()
+        self.update()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.isVisible():
+            self._layout()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        body = QRectF(1, 7, self.width() - 2, self.height() - 8)
+        path = QPainterPath()
+        path.addRoundedRect(body, 9, 9)
+        tail = QPainterPath(QPointF(18, 8))  # the little point up to the text box
+        tail.lineTo(26, 0)
+        tail.lineTo(34, 8)
+        tail.closeSubpath()
+        path = path.united(tail)
+        p.fillPath(path, QColor(36, 31, 61))
+        p.setPen(QPen(QColor(theme.ACCENT), 1))
+        p.drawPath(path)

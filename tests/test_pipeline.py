@@ -490,3 +490,29 @@ def test_shot_descriptions_marks_scene_keys_transitions_and_text(analysed):
     intro = [c.shot for c in plan.cuts if c.f1 / fps <= 8.0]
     assert nappa in intro
     proj.render_preview()
+
+
+def test_a_highlighted_part_really_changes(analysed):
+    from montage_director.project import Project, Settings
+
+    song, footage = analysed
+    A, B = 10.0, 18.0
+
+    def run(text):
+        proj = Project(settings=Settings(style="hype", seed=4))
+        proj.song, proj.footage = song, footage
+        proj.direct()
+        if text:
+            proj.refine_region(text, A, B)
+        plan = proj.make_plan()
+        cuts = [c for c in plan.cuts if A <= c.f0 / plan.fps < B - 0.1]
+        flashes = sum(1 for c in cuts for e in c.effects if e.kind == "flash")
+        return sum(c.frames for c in cuts) / len(cuts) / plan.fps, flashes
+
+    base, base_fl = run("")
+    quick, _ = run("quicker cuts")
+    slow, _ = run("slower cuts")
+    _, more_fl = run("more flashes")
+    assert quick < 0.75 * base, (quick, base)
+    assert slow > 1.5 * base, (slow, base)
+    assert more_fl >= base_fl + 2, (more_fl, base_fl)

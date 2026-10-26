@@ -149,7 +149,7 @@ def test_everyday_phrasing(prompt, note):
 
 
 @pytest.mark.parametrize("text, check", [
-    ("make it hit harder", lambda sd: sd.cut_every == 1.0),
+    ("make it hit harder", lambda sd: sd.pace_shift and sd.pace_shift > 0),
     ("match the drums", lambda sd: sd.sync_hits),
     ("cut to the beat here", lambda sd: sd.cut_every == 1.0),
     ("this part should build up", lambda sd: sd.ramp),

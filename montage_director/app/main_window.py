@@ -26,7 +26,7 @@ from ..music import AUDIO_EXTENSIONS
 from ..paths import APP_NAME, data_dir, workspace_dir
 from ..project import EXPORT_PRESETS, Project, Settings
 from . import store, theme
-from .widgets import DropList, Segmented, StyleGrid, Timeline
+from .widgets import DropList, Segmented, StyleGrid, TipBubble, Timeline
 from .worker import start_job
 
 log = logging.getLogger(__name__)
@@ -319,8 +319,9 @@ class ShotPicker(QDialog):
 class InstructionDialog(QDialog):
     """Right-click > Insert instruction here: say what should happen from this point."""
 
-    def __init__(self, parent, t: float, choices: list[tuple[str, float, float]], default: int = 0):
+    def __init__(self, parent, t: float, choices: list[tuple[str, float, float]], default: int = 0, helper=None):
         super().__init__(parent)
+        self.helper = helper
         self.setWindowTitle(f"Instruction at {_mmss(t)}")
         self.resize(560, 300)
         v = QVBoxLayout(self)
@@ -330,6 +331,13 @@ class InstructionDialog(QDialog):
                                      "\"hold one shot\", \"crossfades\", \"flash on every snare\", "
                                      "\"freeze\", text \"THE END\"")
         v.addWidget(self.text, 1)
+        self.bubble = TipBubble()
+        v.addWidget(self.bubble)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(lambda: self.helper and self.bubble.show_help(
+            *self.helper(self.text.toPlainText(), "part")))
+        self.text.textChanged.connect(lambda: self._timer.start(350))
         row = QHBoxLayout()
         row.addWidget(QLabel("For:"))
         self.scope = QComboBox()
@@ -789,6 +797,13 @@ class MainWindow(QMainWindow):
         self.prompt.setPlaceholderText(PROMPT_HINT)
         self.prompt.setFixedHeight(120)
         v.addWidget(self.prompt)
+        self.prompt_bubble = TipBubble()
+        v.addWidget(self.prompt_bubble)
+        self._prompt_timer = QTimer(self)
+        self._prompt_timer.setSingleShot(True)
+        self._prompt_timer.timeout.connect(self._prompt_help)
+        self.prompt.textChanged.connect(lambda: self._prompt_timer.start(400))
+        self.styles.changed.connect(lambda _: self._prompt_timer.start(100))
         row = QHBoxLayout()
         ideas = QPushButton("Ideas ▾")
         ideas.setToolTip("Example ideas to start from (added to what you've written)")
@@ -807,7 +822,7 @@ class MainWindow(QMainWindow):
         v.addSpacing(6)
         v.addWidget(section_title("5", "DIRECTOR"))
         self.director = Segmented(["Free (on this PC)", "AI Director"])
-        self.director.changed.connect(lambda _: self._update_director_info())
+        self.director.changed.connect(lambda _: (self._update_director_info(), self._prompt_timer.start(100)))
         v.addWidget(self.director)
         self.director_info = QLabel("")
         self.director_info.setWordWrap(True)
@@ -964,6 +979,12 @@ class MainWindow(QMainWindow):
         self.redo_btn.clicked.connect(self.redo)
         refine.addWidget(self.redo_btn)
         v.addLayout(refine)
+        self.refine_bubble = TipBubble()
+        v.addWidget(self.refine_bubble)
+        self._refine_timer = QTimer(self)
+        self._refine_timer.setSingleShot(True)
+        self._refine_timer.timeout.connect(self._refine_help)
+        self.refine_edit.textChanged.connect(lambda: self._refine_timer.start(350))
 
         bar = QHBoxLayout()
         self.progress = QProgressBar()
@@ -1366,7 +1387,7 @@ class MainWindow(QMainWindow):
         choices.append(("Just this moment (a flash, a freeze, a text...)", t, min(E, t + beat)))
         here = 1 if sel else 0  # index of "This part of the song"
         default = 0 if sel else (here + 1 if t >= S + 0.85 * (E - S) else here)
-        dlg = InstructionDialog(self, t, choices, default)
+        dlg = InstructionDialog(self, t, choices, default, helper=self.typing_help)
         if dlg.exec() != QDialog.Accepted:
             return
         text = dlg.text.toPlainText().strip()
@@ -1523,7 +1544,10 @@ class MainWindow(QMainWindow):
             self.refine_edit.clear()
             self.timeline.clear_selection()
             self.region_selected(0.0, 0.0)
+            self._focus_at = a  # play the new version from the part that changed
             self._show_result()
+            self.status.setText(f"Changed {_mmss(a)}–{_mmss(b)}: " + "; ".join(n.split(": ", 1)[-1] for n in notes)
+                                + "  (playing from there)")
 
         self._run("refine", work_region, done_region)
 
@@ -1637,6 +1661,24 @@ class MainWindow(QMainWindow):
         self._set_dirty(not getattr(self, "_just_opened", False))
         self._just_opened = False
 
+    # ----- the speech bubbles: how what you type will be read -------------------------- #
+    def typing_help(self, text: str, mode: str):
+        from ..reader import typing_help
+
+        try:
+            return typing_help(text, mode, has_tags=bool(self.project.shot_tags),
+                               use_ai=self.director.index() == 1, style=self.styles.selected())
+        except Exception as exc:  # never let a hint break typing
+            log.debug("typing help failed: %s", exc)
+            return [], []
+
+    def _prompt_help(self):
+        self.prompt_bubble.show_help(*self.typing_help(self.prompt.toPlainText(), "idea"))
+
+    def _refine_help(self):
+        mode = "part" if getattr(self, "region", None) else "refine"
+        self.refine_bubble.show_help(*self.typing_help(self.refine_edit.text(), mode))
+
     def add_idea(self, text: str):
         cur = self.prompt.toPlainText().strip()
         self.prompt.setPlainText((cur + "\n" if cur else "") + text)
@@ -1680,7 +1722,13 @@ class MainWindow(QMainWindow):
     def _on_media_status(self, status):
         from PySide6.QtMultimedia import QMediaPlayer
 
-        if self._seek_after_load and status in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia):
+        if not self._seek_after_load:
+            return
+        if status == QMediaPlayer.LoadingMedia:
+            self._seek_armed = True  # the NEW file is loading (the old one also reports "loaded" as it closes)
+            return
+        if getattr(self, "_seek_armed", False) and status in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia):
+            self._seek_armed = False
             pos, playing = self._seek_after_load
             self._seek_after_load = None
             self.player.setPosition(pos)
@@ -1845,7 +1893,10 @@ class MainWindow(QMainWindow):
             return
         self.video_stack.setCurrentWidget(self.video_widget)
         tl = self.timeline
-        if tl.zoomed():  # zoomed in on a part: play the new version from there
+        focus, self._focus_at = getattr(self, "_focus_at", None), None
+        if focus is not None and self.project.plan is not None:  # just changed a part: play from there
+            self._seek_after_load = (int(max(0.0, focus - self.project.plan.song_start - 0.5) * 1000), True)
+        elif tl.zoomed():  # zoomed in on a part: play the new version from there
             self._seek_after_load = (int(max(0.0, tl.start - tl.full_a) * 1000), True)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()

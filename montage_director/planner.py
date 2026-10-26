@@ -536,6 +536,15 @@ class _Planner:
         sd = self.sd_at(t)
         if sd and sd.cut_every:
             base = sd.cut_every
+        elif sd and sd.pace_shift:
+            # quicker / slower than this part of the song is cut by default
+            label = self.label_at(t)
+            here = self.d.style.cut_every.get(label, 2.0) * self.song.feel.get("rate_scale", 1.0)
+            here = max(1.0, here)  # "0.5" = every beat plus the odd extra hit: count it as a beat
+            i = min(range(len(CUT_CHOICES)), key=lambda k: abs(CUT_CHOICES[k] - here))
+            steps = -1 if sd.pace_shift > 0 else 1
+            steps *= 2 if abs(sd.pace_shift) >= 2 else 1
+            return CUT_CHOICES[max(0, min(len(CUT_CHOICES) - 1, i + steps))]
         else:
             label = self.label_at(t)
             base = self.d.style.cut_every.get(label, 2.0)
@@ -605,7 +614,9 @@ class _Planner:
                 # or a "roll" on every fourth bar. Constant half-beat cuts are unwatchable.
                 mid = (b + beats[i + 1]) / 2
                 near_hit = any(abs(t - mid) < 0.07 and s >= 0.45 for t, s in self.hits_near(mid))
-                if near_hit or bar_index % 4 == 3 or self.ramp_at(b):
+                sd_b = self.sd_at(b)
+                asked = sd_b is not None and (sd_b.pace_shift or 0) > 0  # "quicker cuts" here: every half beat
+                if near_hit or bar_index % 4 == 3 or self.ramp_at(b) or asked:
                     points.add(self.frame_of(mid))
         for s in self.song.sections:
             if self.S < s.start < self.E:
@@ -1045,6 +1056,7 @@ class _Planner:
                 self.add(cuts, self.frame_of(t), "invert", 2)
 
         self.apply_drum_fx(cuts)
+        self.apply_asked_effects(cuts)
 
         # Section entrances.
         for sec in self.song.sections:
@@ -1078,6 +1090,28 @@ class _Planner:
         if not st.pure:
             last = cuts[-1]
             self.add(cuts, max(last.f0, self.total - self.fps), "fade_black", self.fps, 1.0, "black")
+
+    def apply_asked_effects(self, cuts: list[Cut]) -> None:
+        """Effects asked for in a part of the song ("more flashes", "zoom", "shake" there) really show up:
+        on every bar and the strong hits, not just as a slightly higher chance."""
+        beat_f = max(2, int(round(self.beat * self.fps)))
+        for sd in self.d.sections + self.overlays:
+            fx = {k: v for k, v in sd.effects.items() if v >= 0.75 and k in ("flash", "zoom", "shake", "rgb", "invert")}
+            if not fx:
+                continue
+            a, b = max(sd.start, self.S), min(sd.end, self.E)
+            downs = [t for t in self.song.downbeats if a <= t < b]
+            strong = [t for t, st in self.song.hits if a <= t < b and st >= 0.5]
+            for kind in fx:
+                times = sorted(set(downs + (strong if kind in ("flash", "rgb", "invert") else [])))
+                last = -9.0
+                for t in times:
+                    if t - last < (0.35 if kind == "flash" else 0.9):
+                        continue
+                    last = t
+                    frames = {"flash": max(3, self.d.style.flash_frames), "zoom": beat_f, "shake": 2 * beat_f,
+                              "rgb": 4, "invert": 2}[kind]
+                    self.add(cuts, self.frame_of(t), kind, frames, 0.75)
 
     def apply_drum_fx(self, cuts: list[Cut]) -> None:
         """Effects the prompt tied to a drum: "flash on every snare", "slow motion on the big hits"."""

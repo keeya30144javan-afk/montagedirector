@@ -135,6 +135,7 @@ class SectionDirection:
     only_moments: bool = False  # the section is just a place for its moments, not a change of pace
     freeze_frame: bool = False  # a held shot shown as a still picture (the frame the user picked)
     keep_cuts: bool = False     # a selected-part edit that only changes what's shown: the cuts stay as they are
+    pace_shift: float | None = None  # selected part: "quicker" / "slower" than it is now (+ / -, 2 = a lot)
     picked: bool = False        # shots the user chose by hand (always used, in this order)
     transition: str | None = None  # crossfade | dissolve | whip | zoom | white | black | circle | wipe
 
