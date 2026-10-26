@@ -55,6 +55,7 @@ EFFECT_WORDS = [  # (pattern, effect)
     (r"slow motion", "slowmo"),
     (r"revers(?:e|ed|ing)|rewind(?:s|ing)?|backwards", "reverse"),
     (r"invert(?:ed|s)?|negative(?: flash(?:es)?)?|strobe(?:s|ing)?", "invert"),
+    (r"stutter(?:s|ing)?(?: cuts?)?|repeat(?:ed|ing)? frames|skipping tape|tape skips?", "stutter"),
 ]
 FAST = (r"fast(?:er)?|quick(?:er|ly)?|rapid(?:ly)?|hype(?:d)?|aggressive|crazy|insane|intense|chaotic|wild|"
         r"go(?:es)? off|go hard|goes hard|speed (?:it )?up|speeds up|pick(?:s)? (?:it |back )?up|picks back up|energetic|"
@@ -94,12 +95,15 @@ VELOCITY = r"velocity|speed ramps?|speed-ramp(?:s|ing)?|speed changes|time ?rema
 TRANSITION_WORDS = [  # (pattern, kind), most specific first
     (r"\b(?:cross ?fades?|cross-fades?|crossfading|cross[- ]dissolves?|fades? between|blend(?:s|ing)? (?:between|into)|"
      r"fade (?:from one|between) (?:shot|scene|clip)s?)\b", "crossfade"),
+    (r"\b(?:quick|short|fast|little|tiny) (?:fades?|blends?|crossfades?|dissolves?)\b|\bsoft cuts\b|\bghost(?:y|ing)? "
+     r"(?:cuts|blends)\b", "quick"),
     (r"\bdissolves?\b", "dissolve"),
     (r"\bwhip(?:s| pans?| transitions?)?\b|\bswipes?\b|\bslide transitions?\b", "whip"),
     (r"\bzoom(?:-| )?(?:transitions?|through|thru)\b|\bzoom between\b", "zoom"),
     (r"\b(?:dips? to white|white dips?|fade through white|white transitions?|flash transitions?)\b", "white"),
     (r"\b(?:dips? to black|black dips?|fade through black|black transitions?)\b", "black"),
     (r"\bcircle (?:wipes?|transitions?|opens?)\b", "circle"),
+    (r"\b(?:pixel(?:ate|ated|ize|ized)?|glitch|glitchy) transitions?\b|\bpixelat(?:e|ed|ion)\b", "pixel"),
     (r"\bwipes?\b|\bwipe transitions?\b", "wipe"),
 ]
 DRUMS = [  # what "on the ..." can mean (pattern, drum)

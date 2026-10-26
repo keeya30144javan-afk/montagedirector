@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from .plan import Look
 
 SECTION_LABELS = ("intro", "verse", "build", "drop", "breakdown", "outro")
-EFFECTS = ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert")
+EFFECTS = ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert", "stutter")
 CUT_CHOICES = (0.5, 1.0, 2.0, 4.0, 8.0)  # beats per cut
 MOMENT_ACTIONS = ("flash", "freeze", "zoom", "shake", "rgb", "invert", "slowmo",
                   "reverse", "fade_white", "fade_black", "fade_in", "cut")
@@ -41,6 +41,15 @@ class Style:
     look: Look = field(default_factory=Look)
     pure: bool = False                        # cuts only: no automatic effects, fades or speed changes
     cut_on_fills: bool = False                # add cuts on the hits of drum fills
+    # Signature moves (copied into the Direction, so the prompt can still change or remove them):
+    transitions: dict[str, str] = field(default_factory=dict)  # label / "all" / "@sections" -> transition kind
+    drum_fx: list[dict] = field(default_factory=list)          # {"effect", "drum", "label"}: on each drum hit
+    ramp: list[str] = field(default_factory=list)              # labels whose cuts speed up toward the end
+    velocity: list[str] = field(default_factory=list)          # labels cut as a velocity edit
+    fade_in: bool = False                                      # start from black
+    white_dips: float = 0.0          # dip to white on the biggest hits, at most one per this many seconds (0 = off)
+    natural_holds: bool = False      # long shots play on through the footage's own cuts instead of slow motion
+    white_build: float = 0.0         # the picture floods to white over up to this many beats into each drop
 
 
 def _cuts(intro, verse, build, drop, breakdown, outro):
@@ -50,51 +59,63 @@ def _cuts(intro, verse, build, drop, breakdown, outro):
 STYLES: dict[str, Style] = {s.id: s for s in [
     Style(
         "hype", "Hype AMV/GMV",
-        "Fast cuts that hit every beat on the drop, punches and shake on the big hits.",
+        "The fastest: cuts speed up into every drop, then a cut on every half beat with zoom punches and shake "
+        "on the big hits.",
         _cuts(2, 1, 1, 0.5, 2, 4),
         {"intro": _fx(flash=0.2, zoom=0.2), "verse": _fx(flash=0.4, zoom=0.4, shake=0.2, rgb=0.1),
          "build": _fx(flash=0.4, zoom=0.6, shake=0.3), "drop": _fx(flash=0.8, zoom=0.7, shake=0.7, rgb=0.35, invert=0.1),
          "breakdown": _fx(slowmo=0.4, flash=0.1), "outro": _fx(slowmo=0.3)},
         flash_top=0.08, flash_frames=3, freeze_before_drop=True, energy_bias=0.15,
         look=Look(grade="y2k", glow=0.25), cut_on_fills=True,
+        ramp=["build"],
     ),
     Style(
         "flash2000s", "2000s Flash Edit",
-        "Classic YouTube-era edit: white flashes, zoom punches, glow and ghost trails.",
-        _cuts(2, 2, 1, 1, 2, 4),
-        {"intro": _fx(flash=0.5, zoom=0.3, slowmo=0.2), "verse": _fx(flash=0.6, zoom=0.5),
-         "build": _fx(flash=0.7, zoom=0.7, shake=0.2), "drop": _fx(flash=1.0, zoom=0.8, shake=0.5, rgb=0.2),
-         "breakdown": _fx(flash=0.3, slowmo=0.5), "outro": _fx(flash=0.3, slowmo=0.4)},
-        flash_top=0.14, flash_frames=4, white_into_drop=True, blur_into_sections=True,
+        "Classic YouTube-era AMV: calm parts let the scenes play out, intense parts cut on every half beat, "
+        "quick ghosty blends between shots, a dip to white on the biggest hits, glow and ghost trails.",
+        _cuts(2, 1, 0.5, 0.5, 4, 2),
+        {"intro": _fx(flash=0.1, slowmo=0.1), "verse": _fx(flash=0.2, zoom=0.2),
+         "build": _fx(flash=0.3, zoom=0.3), "drop": _fx(flash=0.4, zoom=0.3, shake=0.1),
+         "breakdown": _fx(slowmo=0.2), "outro": _fx(flash=0.1, slowmo=0.2)},
+        flash_top=0.03, flash_frames=4, white_into_drop=True,
         look=Look(grade="y2k", glow=0.45, trails=0.25), cut_on_fills=True,
+        transitions={"all": "quick"}, white_dips=6.0, natural_holds=True, white_build=4.0,
     ),
     Style(
         "sad", "Sad / Emotional",
-        "Long, slow shots, soft fades, washed-out colour and dreamy ghosting.",
-        _cuts(4, 4, 2, 2, 4, 8),
-        {"intro": _fx(slowmo=0.6), "verse": _fx(slowmo=0.5), "build": _fx(slowmo=0.3, zoom=0.1),
-         "drop": _fx(flash=0.2, slowmo=0.3, zoom=0.15), "breakdown": _fx(slowmo=0.7), "outro": _fx(slowmo=0.7)},
-        flash_top=0.02, flash_frames=6, white_into_drop=True, blur_into_sections=True, energy_bias=-0.3,
+        "Long shots that melt into each other with slow dissolves, lots of slow motion, washed-out colour. "
+        "Fades in from black.",
+        _cuts(8, 4, 4, 4, 8, 8),
+        {"intro": _fx(slowmo=0.7), "verse": _fx(slowmo=0.6), "build": _fx(slowmo=0.4),
+         "drop": _fx(flash=0.1, slowmo=0.4, zoom=0.1), "breakdown": _fx(slowmo=0.8), "outro": _fx(slowmo=0.8)},
+        flash_top=0.01, flash_frames=6, white_into_drop=True, energy_bias=-0.4,
         look=Look(grade="sad", glow=0.3, trails=0.45, letterbox=True),
+        transitions={"all": "dissolve"}, fade_in=True,
     ),
     Style(
         "cinematic", "Cinematic Trailer",
-        "Letterboxed, colour graded, steady pacing that tightens on the drop.",
-        _cuts(4, 2, 1, 1, 4, 4),
+        "Built like a trailer: long shots and dips to black between parts, tension that speeds up into the drop, "
+        "a beat of silence, then hard cuts with impacts. Letterboxed and colour graded.",
+        _cuts(8, 4, 2, 2, 4, 8),
         {"intro": _fx(slowmo=0.3), "verse": _fx(zoom=0.1), "build": _fx(zoom=0.3),
-         "drop": _fx(flash=0.3, zoom=0.4, shake=0.3), "breakdown": _fx(slowmo=0.4), "outro": _fx(slowmo=0.4)},
-        flash_top=0.03, flash_frames=3, freeze_before_drop=True,
+         "drop": _fx(flash=0.2, zoom=0.3, shake=0.4), "breakdown": _fx(slowmo=0.5), "outro": _fx(slowmo=0.5)},
+        flash_top=0.02, flash_frames=3, freeze_before_drop=True, energy_bias=-0.05,
         look=Look(grade="cinematic", glow=0.15, letterbox=True),
+        transitions={"@sections": "black"}, ramp=["build"], fade_in=True,
     ),
     Style(
         "glitch", "Glitch / VHS",
-        "RGB splits, negative strobes and shake over a grainy VHS look.",
-        _cuts(2, 1, 1, 0.5, 2, 2),
-        {"intro": _fx(rgb=0.4), "verse": _fx(rgb=0.6, shake=0.3, invert=0.1), "build": _fx(rgb=0.7, shake=0.5, zoom=0.3),
-         "drop": _fx(rgb=0.9, shake=0.8, invert=0.35, zoom=0.5, flash=0.3), "breakdown": _fx(rgb=0.3, reverse=0.3),
-         "outro": _fx(rgb=0.3)},
-        flash_top=0.04, flash_frames=2, energy_bias=0.1,
+        "Broken-tape energy: stutter cuts, RGB splits on every snare, negative strobes on the big hits, "
+        "reversed clips and pixel-glitch transitions over a grainy VHS look.",
+        _cuts(2, 2, 1, 1, 2, 2),
+        {"intro": _fx(rgb=0.3), "verse": _fx(rgb=0.3, shake=0.2, reverse=0.3, stutter=0.2),
+         "build": _fx(rgb=0.4, shake=0.4, zoom=0.2, stutter=0.5),
+         "drop": _fx(rgb=0.4, shake=0.6, invert=0.25, zoom=0.3, flash=0.2, stutter=0.6),
+         "breakdown": _fx(rgb=0.3, reverse=0.5), "outro": _fx(rgb=0.3, reverse=0.3)},
+        flash_top=0.03, flash_frames=2, energy_bias=0.1,
         look=Look(grade="vhs", grain=0.5), cut_on_fills=True,
+        transitions={"@sections": "pixel"},
+        drum_fx=[{"effect": "rgb", "drum": "snare", "label": None}],
     ),
     Style(
         "clean", "Clean Beat Sync",
@@ -189,7 +210,12 @@ class Direction:
 
 def style_direction(style_id: str) -> Direction:
     style = copy.deepcopy(STYLES.get(style_id, STYLES[DEFAULT_STYLE]))
-    return Direction(style=style, look=copy.deepcopy(style.look))
+    d = Direction(style=style, look=copy.deepcopy(style.look), transitions=dict(style.transitions),
+                  drum_fx=[dict(e, style=True) for e in style.drum_fx], ramp=list(style.ramp),
+                  velocity=list(style.velocity))
+    if style.fade_in:
+        d.moments.append(Moment(time=-2.0, action="fade_in", duration=1.0))
+    return d
 
 
 # --------------------------------------------------------------------------- #

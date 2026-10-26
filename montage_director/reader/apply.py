@@ -51,13 +51,15 @@ def _apply_amount(fx: dict, eff: str, amount: str) -> None:
 
 
 EFFECT_LABEL = {"flash": "flashes", "zoom": "zoom punches", "shake": "shake", "rgb": "glitch / RGB split",
-                "slowmo": "slow motion", "reverse": "reversed clips", "invert": "negative strobes"}
+                "slowmo": "slow motion", "reverse": "reversed clips", "invert": "negative strobes",
+                "stutter": "stutter cuts"}
 AMOUNT_WORD = {"none": "no", "less": "fewer", "light": "a few", "more": "more", "add": ""}
 DRUM_WORD = {"snare": "snare", "kick": "kick", "hits": "drum hit", "big": "big hit", "bar": "bar", "beat": "beat"}
 
 
 TRANSITION_NAMES = {"crossfade": "crossfades", "dissolve": "dissolves", "whip": "whip pans", "zoom": "zoom-throughs",
-                    "white": "dips to white", "black": "dips to black", "circle": "circle wipes", "wipe": "wipes"}
+                    "white": "dips to white", "black": "dips to black", "circle": "circle wipes", "wipe": "wipes",
+                    "pixel": "pixel glitches", "quick": "quick blends"}
 MOMENT_WORD = {"fade_black": "fade to black", "fade_white": "fade to white", "freeze": "freeze frame",
                "fade_in": "fade in from black"}
 

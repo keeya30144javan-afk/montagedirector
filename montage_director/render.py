@@ -169,7 +169,8 @@ def _bars(crop) -> str:
 
 
 XFADE = {"crossfade": "fade", "dissolve": "dissolve", "whip": "smoothleft", "zoom": "zoomin", "white": "fadewhite",
-         "black": "fadeblack", "circle": "circleopen", "wipe": "wipeleft", "slide": "slideleft"}
+         "black": "fadeblack", "circle": "circleopen", "wipe": "wipeleft", "slide": "slideleft", "pixel": "pixelize",
+         "quick": "fade"}
 
 
 def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> str:
@@ -268,6 +269,8 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
                          f"enable='eq(n,{e.frame + k})'")
     for e in by_kind.get("fade_black", []):
         chain.append(f"fade=t=out:s={e.frame}:n={max(1, e.frames)}:color=black")
+    for e in by_kind.get("white_up", []):  # the picture floods to white (into a drop)
+        chain.append(f"fade=t=out:s={e.frame}:n={max(1, e.frames)}:color=white")
     for e in by_kind.get("fade_in", []):
         chain.append(f"fade=t=in:s={e.frame}:n={max(1, e.frames)}:color=black")
     if look.letterbox:

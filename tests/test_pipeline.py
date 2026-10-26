@@ -166,7 +166,7 @@ def test_ai_style_off_grid_times_land_on_the_beat(analysed):
     shots = [s.id for s in footage.usable_shots()]
     for a, b in ((0, 5.3), (5.3, 12.7), (12.7, song.duration)):
         d.sections.append(SectionDirection(start=a, end=b, cut_every=1.0, shots=list(shots),
-                                           effects={k: 0.5 for k in EFFECTS}))
+                                           effects={k: 0.5 for k in EFFECTS if k != "stutter"}))
     d.drops = [8.31]                       # the real drop is at 8.0
     d.moments = [Moment(10.27, "flash"), Moment(14.6, "cut")]
     plan = make_plan(song, footage, d, OutputSettings(fps=24, seed=10))
@@ -593,3 +593,20 @@ def test_a_scene_left_to_play_out(analysed):
             and s.end > cut.src_start and s.start < cut.src_start + cut.frames / fps]
     assert len(seen) >= 2, "it plays on through the footage's own cuts"
     assert abs(cut.src_start - shot.start) < 0.1, "from the first frame of a scene"
+
+
+def test_every_style_has_its_own_signature(analysed):
+    """The six styles must feel different, not just change a colour grade."""
+    song, footage = analysed
+    plans = {sid: make_plan(song, footage, style_direction(sid), OutputSettings(fps=24, seed=16)) for sid in STYLES}
+    n = {sid: len(p.cuts) for sid, p in plans.items()}
+    kinds = {sid: {c.transition["kind"] for c in p.cuts if c.transition} for sid, p in plans.items()}
+    effects = {sid: {e.kind for c in p.cuts for e in c.effects} for sid, p in plans.items()}
+    assert n["sad"] < n["cinematic"] < n["hype"], n
+    assert "dissolve" in kinds["sad"]
+    assert "quick" in kinds["flash2000s"]
+    assert not kinds["hype"] and not kinds["clean"], "hype and clean are hard cuts"
+    glitch = plans["glitch"].cuts
+    assert any(a.shot == b.shot and a.src_start == b.src_start for a, b in zip(glitch, glitch[1:])), "stutter cuts"
+    assert "fade_in" in effects["sad"] and "fade_in" in effects["cinematic"]
+    assert all(not c.effects and c.speed == 1.0 and not c.transition for c in plans["clean"].cuts)

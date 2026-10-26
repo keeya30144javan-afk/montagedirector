@@ -6,6 +6,7 @@ import bisect
 import colorsys
 import re
 import copy
+import dataclasses
 import logging
 import random
 from pathlib import Path
@@ -1045,6 +1046,11 @@ class _Planner:
             if frozen or playing_out:
                 speed, reverse = 1.0, False
                 need = dur
+            elif (self.d.style.natural_holds and dur >= 1.2 and not (sd_here and sd_here.shots)
+                  and shot.start + need <= self.footage.sources[shot.source].duration - 0.1
+                  and all(x.usable and x.text < 0.5 and x.id not in self.avoid
+                          for x, _ in self.scene_window(shot, need)[1:])):
+                speed = 1.0  # 2000s: a long shot plays on through the footage's own cuts, as it was animated
             elif self.usable_len(shot) < need and not self.d.style.pure:
                 # Shot shorter than the cut: stretch it with slow motion instead of
                 # running past it into the next scene (which reads as an off-beat cut).
@@ -1074,6 +1080,7 @@ class _Planner:
             cuts.append(cut)
             prev = cut
 
+        cuts = self.apply_stutters(cuts)
         self.apply_effects(cuts)
         cuts = self.apply_moments(cuts)
         self.apply_transitions(cuts)
@@ -1177,6 +1184,11 @@ class _Planner:
             f = self.frame_of(t)
             if st.white_into_drop:
                 self.add(cuts, f, "fade_white", max(4, beat_f), 1.0)
+                if st.white_build > 0 and f > 0:  # flood to white on the shot before, then the drop comes out of it
+                    before = cuts[self.cut_index_at(cuts, f - 1)]
+                    n = min(before.frames, int(st.white_build * beat_f))
+                    if n >= 4:
+                        self.add(cuts, before.f1 - n, "white_up", n, 1.0)
             elif st.flash_top > 0 or self.effect_at(t, "flash") > 0:
                 self.add(cuts, f, "flash", max(4, st.flash_frames + 1), 1.0)
             if self.effect_at(t, "zoom") > 0.1:
@@ -1226,9 +1238,15 @@ class _Planner:
             a, b = (sd.start, sd.end) if sd else (self.S, self.E)
             gap = 0.22 if eff in ("flash", "rgb", "invert") else 0.4
             last = -9.0
+            style_move = sd is None and any(e.get("style") and e["effect"] == eff and e["drum"] == drum
+                                            for e in self.d.drum_fx)
+            if style_move:
+                gap = max(gap, 0.9 * self.beat)  # a signature, not a strobe
             for t in self.drum_times(drum, max(a, self.S), min(b, self.E)):
                 if t - last < gap or (label and self.label_at(t) != label):
                     continue
+                if style_move and self.effect_at(t, eff) <= 0:
+                    continue  # the style's signature move, but this part was asked to go without it
                 if sd is None and self.sd_at(t) is not None and self.sd_at(t).hold and eff not in ("flash",):
                     continue
                 f = self.frame_of(t)
@@ -1265,17 +1283,41 @@ class _Planner:
                 return "zoom" if any(abs(t - d) < 0.05 for d in self.drops) else tr["@sections"]
         return None
 
+    def white_dip_cuts(self, cuts: list[Cut]) -> set[int]:
+        """2000s edits: the biggest hits get a dip to white across the cut (a few per minute)."""
+        every = self.d.style.white_dips
+        if every <= 0 or self.d.style.pure or not self.song.hits:
+            return set()
+        strengths = np.array([s for _, s in self.song.hits])
+        top = float(np.quantile(strengths, 0.85))
+        starts = {c.f0: i for i, c in enumerate(cuts)}
+        out: set[int] = set()
+        for t, s in sorted(self.song.hits, key=lambda h: -h[1]):
+            if s < top:
+                break
+            f = self.frame_of(t)
+            i = next((starts[g] for g in (f, f - 1, f + 1) if g in starts), None)
+            if i is None or i == 0 or any(abs(t - d) < 1.0 for d in self.drops):
+                continue  # only on a cut, and not where the drop has its own white fade
+            if all(abs(t - x) >= every for x in [self.song_t(cuts[j].f0) for j in out]):
+                if self.effect_at(t, "flash") > 0:
+                    out.add(i)
+        return out
+
     def apply_transitions(self, cuts: list[Cut]) -> None:
+        dips = self.white_dip_cuts(cuts)
         for i in range(1, len(cuts)):
             c, prev = cuts[i], cuts[i - 1]
-            kind = self.transition_at(self.song_t(c.f0))
+            kind = "white" if i in dips else self.transition_at(self.song_t(c.f0))
             if not kind or kind == "mix":
                 kind = None if not kind else "crossfade"
             if not kind or prev.reverse or prev.shot == c.shot:
                 continue
-            secs = 0.4 if kind in ("crossfade", "dissolve") else 0.27
+            secs = {"crossfade": 0.4, "dissolve": 0.4, "quick": 0.1}.get(kind, 0.27)
+            if i in dips:
+                secs = 0.17
             n = min(int(round(secs * self.fps)), c.frames // 2, prev.frames)
-            if n < 3 or c.frames < int(0.3 * self.fps):
+            if n < (2 if kind == "quick" else 3) or (kind != "quick" and c.frames < int(0.3 * self.fps)):
                 continue  # too quick to blend: stays a hard cut
             out_at = prev.src_start + prev.frames / self.fps * prev.speed
             shot = self.footage.shots[prev.shot]
@@ -1308,6 +1350,28 @@ class _Planner:
                 edges = ("in" if a == f0 else "") + ("out" if b == f1 else "")
                 tag = {"inout": "both", "in": "in", "out": "out", "": "none"}[edges]
                 c.effects.append(Effect("text", a - c.f0, b - a, fade, f"{name}|{tag}"))
+
+    def apply_stutters(self, cuts: list[Cut]) -> list[Cut]:
+        """Stutter cuts (Glitch/VHS, or "stutters on the drop"): the start of a shot repeats two or three
+        times in quick flickers, like a skipping tape, before it plays on. Done on cuts that land on a snare."""
+        if self.d.style.pure:
+            return cuts
+        flick = max(2, int(round(self.beat / 6 * self.fps)))
+        snares = set(self.frame_of(t) for t in self.song.snares if self.S <= t < self.E)
+        out: list[Cut] = []
+        for c in cuts:
+            t = self.song_t(c.f0)
+            amount = self.effect_at(t, "stutter")
+            reps = 3 if amount >= 0.5 else 2
+            on_snare = any(abs(c.f0 - f) <= 1 for f in snares)
+            if (amount <= 0 or c.freeze or c.reverse or c.frames < flick * (reps + 2)
+                    or not on_snare or self.rng.random() >= amount):
+                out.append(c)
+                continue
+            for k in range(reps):  # the same first frames again and again
+                out.append(dataclasses.replace(c, f0=c.f0 + k * flick, f1=c.f0 + (k + 1) * flick, effects=[]))
+            out.append(dataclasses.replace(c, f0=c.f0 + reps * flick, effects=[]))
+        return out
 
     def split_freeze(self, cuts: list[Cut], i: int, hold: int) -> None:
         """Freeze the last `hold` frames of cut i (the beat before a drop)."""

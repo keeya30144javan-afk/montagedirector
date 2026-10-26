@@ -16,6 +16,14 @@ The app checks for updates when it starts and offers to download new versions. Y
 1. **Footage:** drop in episodes, gameplay recordings or clips (MP4, MKV, MOV, WebM and more). Longer footage gives more variety.
 2. **Song:** drop in an MP3 (or WAV, M4A, FLAC...). Use *Use part of it* to edit only a section, like 0:45 to 1:30.
 3. **Style:** pick a starting point: Hype AMV/GMV, 2000s Flash Edit, Sad / Emotional, Cinematic Trailer, Glitch / VHS or Clean Beat Sync.
+   - **Hype AMV/GMV:** the fastest. Cuts speed up into every drop, then a cut on every half beat with zoom punches and shake on the big hits.
+   - **2000s Flash Edit:** the classic YouTube-era AMV. Calm parts let scenes play out as animated, intense parts cut every half beat, with quick ghosty blends between shots, a dip to white on the biggest hits, a flood to white into each drop, plus glow and ghost trails.
+   - **Sad / Emotional:** long shots that melt into each other with slow dissolves, lots of slow motion, washed-out colour, fading in from black.
+   - **Cinematic Trailer:** long shots and dips to black between parts, tension that speeds up into the drop, a beat of silence, then hard cuts. Letterboxed and graded.
+   - **Glitch / VHS:** stutter cuts (a shot skips like a tape), RGB splits on every snare, negative strobes, reversed clips and pixel-glitch transitions over grainy VHS.
+   - **Clean Beat Sync:** a cut on every beat and nothing else.
+
+   Your idea always wins: "hard cuts", "no stutters", "no slow motion" or "dissolves in the chorus" change the style's moves.
 4. **Your idea:** describe the edit, for example *"Slow emotional intro on the quiet scenes, then go crazy on the drop with the fight scenes and lots of flashes. Freeze frame at 1:05. Vertical for TikTok."*
 5. **Director:**
    - **Free (on this PC):** no account needed. Reads your idea the way an editor would: pace ("a little faster", "not too fast", "back to the flow", "every 2 beats"), effects with amounts ("a few flashes", "less shake", "no glitch"), the drums ("cut on the kick", "flash on every snare", "slow motion on the big hits"), what to show ("fight scenes", "explosions", "close-ups", "dark scenes", "blue shots"), and where ("the chorus", "the second drop", "from 0:30 to 0:45", "the last 20 seconds", "halfway through", "when the solo starts", "before each drop"). Press **Ideas** for examples and **What can I say?** for the full list. Anything it doesn't understand is shown as *Didn't catch* so you can rephrase it.
