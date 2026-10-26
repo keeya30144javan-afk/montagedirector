@@ -181,3 +181,15 @@ def test_hold_until_the_drop_on_one_subject():
     assert [(s.start, s.end, s.cue, s.hold) for s in d.sections] == [(0.0, 17.0, None, True)]
     assert d.sections[0].prefer == {"solo": 1.0, "_query": ["gundam"]}
     assert not d.unclear
+
+
+def test_the_gundam_prompt():
+    d = read("the song is a chill hip hop vibe while the video and its subject matter are liter space robot gundams "
+             "fighting and has real good juxtaposition, so i want the clips shows to be very action packed and include "
+             "good drawn out fight scenes\nat the beginning id like a scene where it focuses on one gundam until about "
+             "00:17 when the beat drops", "cinematic")
+    assert d.drops == [17.0] and not d.unclear
+    assert d.prefer["all"]["motion"] == 1.0 and "_query" not in d.prefer["all"]
+    assert d.notes[0] == "action shots", "describing the song (chill hip hop) doesn't change the pace"
+    assert "a little slower" in d.notes[1], "drawn out fight scenes: a touch longer"
+    assert [(s.start, s.end, s.hold) for s in d.sections] == [(0.0, 17.0, True)]

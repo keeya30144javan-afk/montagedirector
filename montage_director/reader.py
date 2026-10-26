@@ -141,7 +141,8 @@ FAST = (r"fast(?:er)?|quick(?:er|ly)?|rapid(?:ly)?|hype(?:d)?|aggressive|crazy|i
 SLOW = (r"slow(?:er)?(?! motion)|slow (?:it )?down|slows down|calm(?:er)?|chill(?:er)?|mellow|relax(?:ed|ing)?|gentle|"
         r"peaceful|soft(?:er)?|emotional|sad|melanchol(?:y|ic)|laid back|take it easy|long(?:er)? (?:shots|cuts|clips)|"
         r"let it breathe|breathe|tone it down|calm it down|ease up|low energy|quiet|mysterious|eerie|creepy|spooky|"
-        r"ominous|haunting|less cuts|fewer cuts|cut less|less often|longer cuts")
+        r"ominous|haunting|less cuts|fewer cuts|cut less|less often|longer cuts|drawn[- ]out|play out|let (?:them|it|the "
+        r"(?:fights?|shots?|scenes?)) play")
 NORMAL = (r"back to (?:normal|the flow|the groove|regular|how it was|the melody|the (?:main )?(?:beat|vibe|rhythm|pace))|"
           r"normal pace|regular pace|the flow|groove|steady|medium pace|go back|goes back|melody")
 HOLD = (r"still shot|one shot|single shot|\bhold(?:s|ing)?\b|held shot|panning shot|pan shot|one long shot|"
@@ -172,7 +173,7 @@ DRUMS = [  # what "on the ..." can mean (pattern, drum)
     (r"drops?", "drop"),
 ]
 CONTENT = [  # (pattern, preferences, what to call it)
-    (r"punch(?:es|ing)?|fight(?:s|ing)?|kicking|attack(?:s|ing)?|combat|battle(?:s)?|beat ?downs?|combos?|"
+    (r"action[- ]packed|punch(?:es|ing)?|fight(?:s|ing)?|kicking|attack(?:s|ing)?|combat|battle(?:s)?|beat ?downs?|combos?|"
      r"brawl(?:s|ing)?|clash(?:es|ing)?|sword ?fights?|gun ?fights?|shoot ?outs?|chases?|action(?: scenes| shots)?",
      {"motion": 1.0}, "action shots"),
     (r"explosions?|explod\w+|blasts?|beams?|energy (?:blasts?|attacks?)|kamehameha|final flash|galick gun|lasers?",
@@ -209,7 +210,8 @@ outro verse chorus drop drops bridge build section sections second seconds minut
 character characters people person guy guys scene scenes shot shots clip clips footage video edit edits cut cuts
 moment moments possible get getting look looks looking happen happens happening put putting use using try
 final screen bunch frame frames image picture whole entire every each other way long short too much fast slow
-focus focused focusing one two three single just only beat beats bass
+focus focused focusing one two three single just only beat beats bass include includes including packed
+shows showing drawn real vibe vibes juxtaposition contrast subject matter liter literal literally kinda pretty fun
 quick quicker slower faster cool sick nice good great best better bad kind sort feel""".split())
 FILLER = re.compile(r"\b(i want|i'd like|i would like|i need|please|make it|make the|make this|the edit|this edit|edit|it|"
                     r"should|would|be|have|has|to|of|the|a|an|and|with|for|in|on|is|are|that|this|my|me|i|you|"
@@ -617,6 +619,9 @@ def read_instruction(text: str) -> Instruction:
     fast = [m for m in FAST_RX.finditer(work)]
     slow = [m for m in SLOW_RX.finditer(work)]
     normal = NORMAL_RX.search(work)
+    if re.search(r"\b(?:the |this |my )?(?:song|music|track|beat|instrumental)(?:'s| is| has| feels| sounds| got)\b|"
+                 r"\bit'?s an? [\w\s-]{0,25}(?:song|track|beat)\b", text):
+        fast, slow = [], []  # "the song is a chill hip hop vibe": describes the music, not how to cut it
     up, down = 0.0, 0.0
     for m in fast:
         if _negated(work, m.start()):
@@ -625,7 +630,8 @@ def read_instruction(text: str) -> Instruction:
             up = max(up, _strength(work, m.start(), m.end()))
     for m in slow:
         if not _negated(work, m.start()):
-            down = max(down, _strength(work, m.start(), m.end()))
+            gentle = re.match(r"drawn|play out|let ", m.group(0))  # "drawn out fights": a touch longer, not slow
+            down = max(down, 0.5 if gentle else _strength(work, m.start(), m.end()))
     if fast or slow:
         ins.pace = up - down if (up or down) else None
         if ins.pace == 0.0 and not normal:
