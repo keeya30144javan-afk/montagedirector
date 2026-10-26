@@ -245,3 +245,14 @@ def test_typing_help_suggests_spelling():
 
     _, tips = typing_help("quick cuts with zoms")
     assert tips and "“zooms” (not “zoms”)" in tips[0]
+
+
+def test_asking_for_longer_scenes_more_than_once_counts():
+    """"drawn out fight scenes ... dont use so many cuts ... last longer": three asks, a big change, in seconds."""
+    d = read("include good drawn out fight scenes. do not re use scenes, dont use so many cuts, have the scenes and "
+             "fights last longer before going to the next one. Old 2008 YouTube AMV feel with glow and ghost",
+             "flash2000s")
+    assert d.min_shot >= 1.5 and "much slower" in " ".join(d.notes)
+    assert not any("shots of" in n for n in d.notes), "look words aren't things to search for"
+    assert read("a little slower").min_shot < read("way slower").min_shot
+    assert read("fast cuts").min_shot == 0

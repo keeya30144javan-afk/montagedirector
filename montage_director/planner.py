@@ -564,7 +564,8 @@ class _Planner:
             i = min(range(len(CUT_CHOICES)), key=lambda k: abs(CUT_CHOICES[k] - here))
             steps = -1 if sd.pace_shift > 0 else 1
             steps *= 2 if abs(sd.pace_shift) >= 2 else 1
-            return CUT_CHOICES[max(0, min(len(CUT_CHOICES) - 1, i + steps))]
+            rate = CUT_CHOICES[max(0, min(len(CUT_CHOICES) - 1, i + steps))]
+            return self.long_enough(rate) if sd.pace_shift < 0 else rate
         else:
             label = self.label_at(t)
             base = self.d.style.cut_every.get(label, 2.0)
@@ -585,14 +586,24 @@ class _Planner:
                         base = _slower(base)
                     elif local < self.energy_q[1] and base <= 0.5:
                         base = 1.0
+                base = self.long_enough(base)
         ramp = self.ramp_at(t)
         if ramp:  # quicker and quicker: full length, then half, then a quarter
             a, b = ramp
             p = (t - a) / max(0.1, b - a)
             base = max(base, 2.0)
             factor = 1.0 if p < 0.4 else (0.5 if p < 0.75 else 0.25)
-            return min(CUT_CHOICES, key=lambda c: abs(c - base * factor))
+            rate = min(CUT_CHOICES, key=lambda c: abs(c - base * factor))
+            asked = sd is not None and sd.ramp  # the user's own build-up; a style's gives way to "longer scenes"
+            return rate if asked else self.long_enough(rate)
         return base
+
+    def long_enough(self, beats: float) -> float:
+        """"Longer scenes" (Direction.min_shot): slow the cutting until a shot lasts at least that many seconds."""
+        need = self.d.min_shot
+        if need <= 0:
+            return beats
+        return max(beats, min((c for c in CUT_CHOICES if c * self.beat >= need * 0.95), default=CUT_CHOICES[-1]))
 
     def effect_at(self, t: float, name: str) -> float:
         ov = self.overlay_at(t)
@@ -666,7 +677,7 @@ class _Planner:
         for sd in sync:
             if self.S < sd.start < self.E:
                 points.add(self.frame_of(sd.start))
-        if self.d.style.cut_on_fills:
+        if self.d.style.cut_on_fills and not self.d.min_shot:  # (no extra cuts when asked for longer scenes)
             for ev in self.song.events_of("fill"):
                 t0 = ev["time"]
                 if not (self.S < t0 < self.E) or self.hold_at(t0) or self.sync_at(t0):

@@ -610,3 +610,24 @@ def test_every_style_has_its_own_signature(analysed):
     assert any(a.shot == b.shot and a.src_start == b.src_start for a, b in zip(glitch, glitch[1:])), "stutter cuts"
     assert "fade_in" in effects["sad"] and "fade_in" in effects["cinematic"]
     assert all(not c.effects and c.speed == 1.0 and not c.transition for c in plans["clean"].cuts)
+
+
+def test_longer_scenes_last_long_even_on_a_fast_song(analysed):
+    """At a fast tempo one beat is under half a second: "longer scenes" must mean seconds on screen."""
+    import copy
+
+    song, footage = analysed
+    fast = copy.deepcopy(song)
+    k = song.tempo / 150.0
+    fast.tempo = 150.0
+    for name in ("beats", "downbeats", "kicks", "snares", "hats", "drops"):
+        setattr(fast, name, [t * k for t in getattr(fast, name)])
+    fast.hits = [(t * k, s) for t, s in fast.hits]
+    fast.duration = song.duration * k
+    for s in fast.sections:
+        s.start, s.end = s.start * k, s.end * k
+    prompt = "dont use so many cuts, have the scenes and fights last longer before going to the next one"
+    for style in ("hype", "flash2000s", "glitch"):
+        plan = make_plan(fast, footage, read_prompt(prompt, style_direction(style)), OutputSettings(fps=24, seed=17))
+        scenes = [c for i, c in enumerate(plan.cuts) if i == 0 or plan.cuts[i - 1].shot != c.shot]  # (stutters: one)
+        assert plan.duration / len(scenes) >= 1.2, (style, len(scenes))

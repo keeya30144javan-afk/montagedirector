@@ -145,8 +145,13 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
     paces = [i.pace for i in instructions if i.scope == "all" and i.pace]
     if paces:
         up = max([p for p in paces if p > 0], default=0.0)
-        down = min([p for p in paces if p < 0], default=0.0)
+        slow = [p for p in paces if p < 0]
+        # asked more than once ("fewer cuts", "let the fights last longer", "drawn out scenes"): it really matters
+        down = max(-2.0, min(slow) - 0.5 * (len(slow) - 1)) if slow else 0.0
         overall = up + (0.5 * down if up and down > -1 else down)  # "kinda fast but not too crazy": still faster
+        if overall < 0:
+            # longer scenes are about seconds on screen, not beats: at 144 BPM "one beat" is under half a second
+            d.min_shot = 1.6 if overall <= -1.5 else (1.1 if overall <= -0.75 else 0.7)
         first = True
         for ins in instructions:
             if ins.scope == "all" and ins.pace:

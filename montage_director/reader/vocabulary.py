@@ -165,7 +165,8 @@ crazy insane wild chill hype hyped intense calm epic hard harder go goes going h
 dont doesnt wont cant isnt not never no any anything nothing lot lots alot thing stuff kind sure okay maybe
 longer shorter play plays playing less fewer more
 quick quicker slower faster cool sick nice good great best better bad kind sort feel
-search find finding look looking scene battle play plays playing out through here""".split())
+search find finding look looking scene battle play plays playing out through here
+amv amvs gmv gmvs youtube old glow glowy ghost ghosting trails feel vibe vibes style styled era classic retro look""".split())
 FILLER = re.compile(r"\b(i want|i'd like|i would like|i need|please|make it|make the|make this|the edit|this edit|edit|it|"
                     r"should|would|be|have|has|to|of|the|a|an|and|with|for|in|on|is|are|that|this|my|me|i|you|"
                     r"thanks|thank you|ok|okay|like|just|really|very|so|some|lot|lots|also|too|then|there|"

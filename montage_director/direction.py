@@ -200,6 +200,7 @@ class Direction:
     tap_exact: list[float] = field(default_factory=list)     # taps placed exactly (not snapped to a hit)
     tap_scenes: list[dict] = field(default_factory=list)     # scene-key taps: {time, prefer, favorites}
     shot_tags: dict[int, dict] = field(default_factory=dict)  # AI shot descriptions {id: {desc, kind, people}}
+    min_shot: float = 0.0                                    # "longer scenes": no shot shorter than this (seconds)
 
     def section_direction(self, t: float) -> SectionDirection | None:
         for s in self.sections:

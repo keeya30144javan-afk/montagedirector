@@ -91,7 +91,7 @@ Tests: `pip install pytest` then `pytest`. Want to help? [CONTRIBUTING.md](CONTR
 ## Releasing a new version
 
 1. Update `__version__` in `montage_director/__init__.py`.
-2. Push a tag: `git tag v0.4.5 && git push origin v0.4.5`.
+2. Push a tag: `git tag v0.4.6 && git push origin v0.4.6`.
 3. GitHub Actions builds the Windows installer and the Mac disk image and publishes them on the Releases page. Installed copies see the update the next time they start.
 
 To build test installers without publishing, open **Actions → Build installers → Run workflow**.
