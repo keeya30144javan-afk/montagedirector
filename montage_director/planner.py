@@ -228,9 +228,19 @@ class _Planner:
         return pref
 
     def content_score(self, s: Shot, pref: dict[str, float]) -> float:
-        """How well a shot matches what the prompt asked to see."""
+        """How well a shot matches what the prompt asked to see (remembered per shot and request)."""
         if not pref:
             return 0.0
+        if pref is not getattr(self, "_pref_obj", None):  # the same request is scored for many shots in a row
+            self._pref_obj = pref
+            self._pref_key = tuple(sorted((k, tuple(v) if isinstance(v, list) else v) for k, v in pref.items()))
+        key = (s.id, self._pref_key)
+        cache = self.__dict__.setdefault("_score_cache", {})
+        if key not in cache:
+            cache[key] = self._content_score(s, pref)
+        return cache[key]
+
+    def _content_score(self, s: Shot, pref: dict[str, float]) -> float:
         f = self.features.get(s.id)
         if f is None:
             return 0.0
@@ -785,7 +795,8 @@ class _Planner:
                 # asked for something specific ("as many characters as possible"): the best match
                 # may come back even if it was used earlier
                 best = max((self.content_score(s, pref) for s in pool), default=-9.0)
-                pool += [s for s in self.shots if s not in pool and self.content_score(s, pref) > max(0.6, best)
+                have = {x.id for x in pool}  # (ids: comparing whole shots field by field is slow)
+                pool += [s for s in self.shots if s.id not in have and self.content_score(s, pref) > max(0.6, best)
                          and (prev is None or s.id != prev.shot)]
             def hold_score(s):
                 fits = min(1.0, self.usable_len(s) / max(need, 0.1))
@@ -830,7 +841,8 @@ class _Planner:
             best = max((self.content_score(s, pref) for s in pool), default=-9.0)
             if best < 0.3:
                 spacing = max(6, self.n_groups // 4)
-                pool += [s for s in self.shots if s not in pool and self.content_score(s, pref) > 0.6
+                have = {x.id for x in pool}
+                pool += [s for s in self.shots if s.id not in have and self.content_score(s, pref) > 0.6
                          and self.cut_i - self.group_last.get(s.group, -99) > spacing]
         if not pool:  # tiny footage: fall back to anything not shown in the last few cuts
             pool = [s for s in self.shots if self.cut_i - self.group_last.get(s.group, -99) > 2] or self.shots
