@@ -133,6 +133,7 @@ class SectionDirection:
     what: str = ""              # how the free reader summed it up, for the timeline under the player
     moments: list[str] = field(default_factory=list)  # moments at the start of this place ("freeze when it stops")
     only_moments: bool = False  # the section is just a place for its moments, not a change of pace
+    freeze_frame: bool = False  # a held shot shown as a still picture (the frame the user picked)
 
 
 @dataclass

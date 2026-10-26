@@ -10,9 +10,10 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                               QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
+                               QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
+                               QListWidgetItem, QMainWindow, QMenu, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider,
                                QStackedLayout, QVBoxLayout, QWidget)
 
@@ -142,9 +143,78 @@ musical moments it hears: "when the bass drops", "when the drums get faster", "w
 <b>Look and shape:</b> black and white, VHS, Y2K, film / trailer, sad, dreamy, glow, ghost trails, letterbox,
 vertical / TikTok, square; "no repeats".<br><br>
 The free director picks shots by how they look and move (action, calm, dark, bright, colour), not by who
-is in them: to ask for a character by name ("Vegeta powering up"), use the AI Director.<br><br>
+is in them. To get a particular shot (a character, a group shot), select that part of the timeline and
+press <b>Pick shot…</b>, or use the AI Director.<br><br>
 Anything it doesn't understand is listed under the preview as <i>Didn't catch</i>. The AI Director
 understands any wording."""
+
+
+class ShotPicker(QDialog):
+    """Choose one shot from the footage, by thumbnail."""
+
+    def __init__(self, parent, footage, seconds: float):
+        super().__init__(parent)
+        self.setWindowTitle("Pick a shot")
+        self.resize(980, 640)
+        self.chosen = None
+        self.footage = footage
+        v = QVBoxLayout(self)
+        top = QHBoxLayout()
+        top.addWidget(QLabel(f"Choose the shot for this {seconds:.1f} s part. Double-click to use it."))
+        top.addStretch()
+        top.addWidget(QLabel("Show:"))
+        self.order = QComboBox()
+        for key, label in (("time", "In footage order"), ("calm", "Calmest first"), ("action", "Most action first"),
+                           ("long", "Longest first")):
+            self.order.addItem(label, key)
+        self.order.currentIndexChanged.connect(self._fill)
+        top.addWidget(self.order)
+        v.addLayout(top)
+        self.grid = QListWidget()
+        self.grid.setViewMode(QListView.IconMode)
+        self.grid.setIconSize(QSize(208, 117))
+        self.grid.setGridSize(QSize(224, 150))
+        self.grid.setResizeMode(QListView.Adjust)
+        self.grid.setMovement(QListView.Static)
+        self.grid.setUniformItemSizes(True)
+        self.grid.itemDoubleClicked.connect(lambda _: self.accept())
+        v.addWidget(self.grid, 1)
+        self.freeze = QCheckBox("Freeze on this frame (a still picture instead of the moving clip)")
+        self.freeze.setChecked(seconds > 4.0)
+        v.addWidget(self.freeze)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Use this shot")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+        self._fill()
+
+    def _fill(self):
+        shots = [s for s in self.footage.shots if s.usable]
+        key = self.order.currentData()
+        if key == "calm":
+            shots.sort(key=lambda s: s.motion)
+        elif key == "action":
+            shots.sort(key=lambda s: -s.motion)
+        elif key == "long":
+            shots.sort(key=lambda s: -(s.end - s.start))
+        self.grid.clear()
+        names = len(self.footage.sources) > 1
+        for s in shots:
+            src = Path(self.footage.sources[s.source].path).stem[:14] + " " if names else ""
+            item = QListWidgetItem(f"{src}{_mmss(s.start)} · {s.end - s.start:.1f}s")
+            pix = QPixmap(s.thumb) if s.thumb and Path(s.thumb).is_file() else QPixmap()
+            if not pix.isNull():
+                item.setIcon(QIcon(pix.scaled(208, 117, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+            item.setData(Qt.UserRole, s.id)
+            self.grid.addItem(item)
+
+    def accept(self):
+        item = self.grid.currentItem()
+        if item is None:
+            return
+        self.chosen = int(item.data(Qt.UserRole))
+        super().accept()
 
 
 class TapFilter(QObject):
@@ -427,6 +497,12 @@ class MainWindow(QMainWindow):
         self.region_chip.clicked.connect(self.timeline.clear_selection)
         self.region_chip.hide()
         refine.addWidget(self.region_chip)
+        self.pick_btn = QPushButton("Pick shot…")
+        self.pick_btn.setToolTip("Choose exactly which shot plays in the selected part (for example a group shot "
+                                 "for the final note)")
+        self.pick_btn.clicked.connect(self.pick_shot_for_region)
+        self.pick_btn.hide()
+        refine.addWidget(self.pick_btn)
         self.refine_edit = QLineEdit()
         self.refine_edit.setPlaceholderText(self.REFINE_HINT)
         self.refine_edit.returnPressed.connect(self.refine)
@@ -696,14 +772,30 @@ class MainWindow(QMainWindow):
         if b <= a:
             self.region = None
             self.region_chip.hide()
+            self.pick_btn.hide()
             self.refine_edit.setPlaceholderText(self.REFINE_HINT)
             return
         self.region = (a, b)
         self.region_chip.setText(f"{_mmss(a)}–{_mmss(b)}  ✕")
         self.region_chip.show()
+        self.pick_btn.setVisible(self.project.plan is not None)
         self.refine_edit.setPlaceholderText(f"What should happen from {_mmss(a)} to {_mmss(b)}? e.g. "
                                             "\"quicker cuts with punches\", \"hold one shot\", \"cut on the hits\"")
         self.refine_edit.setFocus()
+
+    def pick_shot_for_region(self):
+        region = getattr(self, "region", None)
+        proj = self.project
+        if not region or proj.footage is None or self.job is not None:
+            return
+        a, b = region
+        dlg = ShotPicker(self, proj.footage, b - a)
+        if dlg.exec() != QDialog.Accepted or dlg.chosen is None:
+            return
+        proj.checkpoint()
+        proj.pick_region_shot(a, b, dlg.chosen, dlg.freeze.isChecked())
+        self.timeline.clear_selection()
+        self._replan(f"Putting your shot in {_mmss(a)}–{_mmss(b)}...")
 
     # ------------------------------------------------------------ tap to direct
     def toggle_tapping(self):

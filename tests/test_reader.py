@@ -162,3 +162,10 @@ def test_selected_part_phrasing(text, check):
 
     sd, _ = region_direction(text, 10.0, 20.0)
     assert sd is not None and check(sd), text
+
+
+def test_a_still_for_the_final_shot():
+    from montage_director.reader import region_direction
+
+    sd, _ = region_direction("a still of a bunch of characters on screen for the final shot", 280.0, 290.0)
+    assert sd is not None and sd.hold and sd.still and "Pick shot" in sd.what

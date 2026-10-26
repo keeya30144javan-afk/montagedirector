@@ -407,3 +407,18 @@ def test_freeze_in_a_selected_part(analysed):
     assert any(c.freeze and abs(c.f0 / plan.fps - 12.0) < 0.3 for c in plan.cuts)
     early = lambda p: [(c.f0, c.shot) for c in p.cuts if c.f1 / p.fps <= 11.0]
     assert early(before) == early(plan), "a freeze-only edit must not re-cut the rest"
+
+
+def test_pick_a_shot_for_the_final_note(analysed):
+    from montage_director.project import Project, Settings
+
+    song, footage = analysed
+    proj = Project(settings=Settings(style="hype", seed=4))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    shot = footage.usable_shots()[-1].id
+    proj.pick_region_shot(14.07, 20.0, shot, freeze=True)  # starts just off the beat grid
+    plan = proj.make_plan()
+    last = [c for c in plan.cuts if c.f0 / plan.fps >= 14.0]
+    assert len(last) == 1 and last[0].shot == shot and last[0].freeze
+    assert abs(last[0].f0 / plan.fps - 14.07) <= 1 / plan.fps + 1e-6, "the part starts exactly where it was selected"

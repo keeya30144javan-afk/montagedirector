@@ -194,6 +194,21 @@ class Project:
         self.taps = []
         self.apply_taps()
 
+    def pick_region_shot(self, start: float, end: float, shot_id: int, freeze: bool = False) -> None:
+        """Hold one shot the user chose for a selected part of the song."""
+        if self.direction is None:
+            raise ValueError("Make an edit first.")
+        start, end = max(0.0, min(start, end)), max(start, end)
+        if end - start < 0.3:
+            raise ValueError("Select a longer part of the song (drag across the timeline).")
+        shot = self.footage.shots[shot_id]
+        sd = SectionDirection(start=start, end=end, fixed=True, hold=True, cut_every=8.0, shots=[shot_id],
+                              freeze_frame=freeze, energy=0.3, note=f"your pick: shot {shot_id}",
+                              what=f"your pick (shot {shot_id}{', as a still' if freeze else ''})")
+        sd.effects = {k: 0.0 for k in ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert")}
+        self.direction.regions = [r for r in self.direction.regions if r.end <= start or r.start >= end]
+        self.direction.regions.append(sd)
+
     def remove_region(self, t: float) -> bool:
         if self.direction is None:
             return False

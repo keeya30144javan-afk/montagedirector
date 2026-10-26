@@ -145,7 +145,9 @@ SLOW = (r"slow(?:er)?(?! motion)|slow (?:it )?down|slows down|calm(?:er)?|chill(
 NORMAL = (r"back to (?:normal|the flow|the groove|regular|how it was|the melody|the (?:main )?(?:beat|vibe|rhythm|pace))|"
           r"normal pace|regular pace|the flow|groove|steady|medium pace|go back|goes back|melody")
 HOLD = (r"still shot|one shot|single shot|\bhold(?:s|ing)?\b|held shot|panning shot|pan shot|one long shot|"
-        r"stay on (?:one|a|the)|linger|let (?:it|the shot) play|don't cut|no cuts|long take")
+        r"stay on (?:one|a|the)|linger|let (?:it|the shot) play|don't cut|no cuts|long take|"
+        r"\ba still\b|\bstill (?:of|frame|image|picture)\b|\b(?:final|last|closing|ending|end) shot\b|"
+        r"\bend (?:it )?(?:on|with) (?:a|one) (?:shot|still|image|picture)\b|group shot|wide shot")
 RAMP = (r"faster and faster|quicker and quicker|more and more cuts|speed(?:s|ing)? up (?:gradually|more and more)|"
         r"gradually (?:faster|quicker|speed(?:s|ing)? up)|build(?:s|ing)? (?:up )?(?:the )?tension|accelerat\w+|"
         r"getting (?:faster|quicker)|ramp(?:s|ing)? up|cuts? speed(?:s|ing)? up|build(?:s|ing)? up (?:the )?(?:speed|pace|cuts)")
@@ -346,6 +348,7 @@ class Instruction:
     velocity: bool = False
     moments: list[str] = field(default_factory=list)        # freeze | flash | fade_black | ...
     frantic: bool = False           # asked for the quickest cutting (half beats)
+    people: bool = False            # asked for particular characters / a group: the free director can't see who
     understood: bool = False
 
 
@@ -587,6 +590,8 @@ def read_instruction(text: str) -> Instruction:
             ins.pace = None
     if normal and ins.pace is None:
         ins.pace = 0.0
+    ins.people = bool(re.search(r"\b(?:characters?|everyone|everybody|the (?:whole )?(?:crew|team|squad|gang|cast|group)|"
+                                r"group shot|together|all of them|both of them|him|her|them)\b", text))
     ins.frantic = bool(re.search(r"frantic|rapid|flurry|barrage|crazy|insane|nonstop", work))
 
     ins.understood = bool(ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold
@@ -1111,6 +1116,8 @@ def region_direction(text: str, start: float, end: float) -> tuple[SectionDirect
     sd = probe.sections[0]
     sd.moments = moments
     sd.note = text.strip()
+    if ins.people and sd.hold:
+        sd.what = (sd.what or "hold one shot") + " (tip: use Pick shot… to choose exactly who is on screen)"
     if moments and sd.what:
         sd.what += ", " + ", ".join(MOMENT_WORD.get(a, a) for a in moments)
     elif moments:

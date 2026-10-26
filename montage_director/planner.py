@@ -495,7 +495,7 @@ class _Planner:
             j += 1
 
     def sd_at(self, t: float) -> SectionDirection | None:
-        return self.d.section_direction(t)
+        return self.d.section_direction(t + 0.5 / self.fps)  # a cut starts on a frame: allow half a frame
 
     def cut_every_at(self, t: float) -> float:
         sd = self.sd_at(t)
@@ -636,6 +636,13 @@ class _Planner:
 
         # Too-short cuts read as glitches: keep a minimum length (priority points win).
         min_len = max(3, int(round(0.12 * self.fps)))
+        # Edges of a part the user selected are exact: nearby automatic cuts give way to them.
+        fixed = {self.frame_of(x) for sd in self.d.sections if sd.fixed for x in (sd.start, sd.end)
+                 if self.S < x < self.E}
+        if fixed:
+            points = {p for p in points if p in fixed or all(abs(p - f) >= min_len for f in fixed)}
+            points |= fixed
+            priority |= fixed
         tap_min = max(2, int(round(0.08 * self.fps)))  # tapped cuts may sit closer together
         ordered = sorted(p for p in points if 0 < p < self.total)
         kept = [0]
@@ -715,6 +722,8 @@ class _Planner:
                 return (3.0 * fits + 1.5 * calm + camera + (0.5 if s.static and sd.still else 0)
                         - 3.0 * s.text + 1.5 * self.content_score(s, pref) + self.rng.gauss(0, 0.1))
             return max(pool, key=hold_score)
+        if sd and sd.shots and sd.fixed and sd.hold and 0 <= sd.shots[0] < len(self.footage.shots):
+            return self.footage.shots[sd.shots[0]]  # the user picked this shot by hand: always use it
         if sd and sd.shots:
             # The director's list for this section, in order, each scene once.
             key = id(sd)
@@ -864,13 +873,20 @@ class _Planner:
                 reverse = True
             need = dur * speed
             shot = self.pick_shot(t0, need, prev)
-            if self.usable_len(shot) < need and not self.d.style.pure:
+            sd_here = self.sd_at(t0)
+            frozen = bool(sd_here and sd_here.freeze_frame and sd_here.shots and shot.id in sd_here.shots)
+            if frozen:
+                speed = 1.0
+            elif self.usable_len(shot) < need and not self.d.style.pure:
                 # Shot shorter than the cut: stretch it with slow motion instead of
                 # running past it into the next scene (which reads as an off-beat cut).
                 speed = max(0.25, round(self.usable_len(shot) / dur, 3))
                 need = dur * speed
             energetic = self.target_energy(t0, t1) > 0.5
-            start = self.in_point(shot, need, energetic and not reverse, t0, dur, speed)
+            if frozen:  # the frame the user picked (the thumbnail is the middle of the shot)
+                start = round((shot.start + shot.end) / 2, 3)
+            else:
+                start = self.in_point(shot, need, energetic and not reverse, t0, dur, speed)
             self.uses[shot.id] = self.uses.get(shot.id, 0) + 1
             self.used_windows.setdefault(shot.id, []).append((start, start + need))
             self.group_uses[shot.group] = self.group_uses.get(shot.group, 0) + 1
@@ -879,7 +895,7 @@ class _Planner:
             src = self.footage.sources[shot.source]
             cut = Cut(f0=f0, f1=f1, shot=shot.id, source=src.path, src_start=round(start, 3),
                       speed=speed, reverse=reverse, section=label, crop=tuple(shot.crop),
-                      focus=self.focus_of(shot, start, start + need))
+                      focus=self.focus_of(shot, start, start + need), freeze=frozen)
             cuts.append(cut)
             prev = cut
 
