@@ -516,3 +516,34 @@ def test_a_highlighted_part_really_changes(analysed):
     assert quick < 0.75 * base, (quick, base)
     assert slow > 1.5 * base, (slow, base)
     assert more_fl >= base_fl + 2, (more_fl, base_fl)
+
+
+def test_look_alike_shots_are_kept_apart(analysed):
+    """Two shots that look almost the same (colours, layout) aren't put back to back."""
+    import copy
+
+    import numpy as np
+
+    from montage_director.planner import _Planner
+
+    song, footage = analysed
+    footage = copy.deepcopy(footage)
+    a, b = footage.shots[0], footage.shots[1]
+    b.sig = list(a.sig)  # make shot 1 look exactly like shot 0 (different scenes, same picture)
+    p = _Planner(song, footage, style_direction("hype"), OutputSettings(fps=24, seed=3))
+    row = p.look_alike(a.id)
+    assert row[b.id] == 1.0 and row[a.id] == 1.0
+    assert min(row) < 0.5, "different-looking shots don't count"
+
+    def side_by_side():
+        ids = [c.shot for c in make_plan(song, footage, style_direction("hype"), OutputSettings(fps=24, seed=3)).cuts]
+        return sum({x, y} == {a.id, b.id} for x, y in zip(ids, ids[1:]))
+
+    now = side_by_side()
+    real = _Planner.look_alike
+    try:
+        _Planner.look_alike = lambda self, i: np.zeros(len(self.footage.shots))
+        without = side_by_side()
+    finally:
+        _Planner.look_alike = real
+    assert now <= 1 and now < without, (now, without)

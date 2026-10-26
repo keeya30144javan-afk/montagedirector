@@ -57,6 +57,9 @@ class _Planner:
         self.group_uses: dict[int, int] = {}
         self.group_last: dict[int, int] = {}
         self.cut_i = 0
+        self.recent: list[int] = []          # the last few shots used (for variety)
+        self._like_rows: dict[int, np.ndarray] = {}
+        self._sigs = None
         self.n_groups = len({s.group for s in self.shots}) or 1
         self.beats_a = np.asarray(song.beats, dtype=float)
         self.down_a = np.asarray(song.downbeats, dtype=float)
@@ -858,9 +861,14 @@ class _Planner:
         if len(long_enough) >= max(3, len(pool) // 5):
             pool = long_enough
         best, best_score = None, -1e9
+        # Variety: don't follow a shot with one that looks just like it (same colours, framing and
+        # camera move), even if it's from a different scene. Strongest for the shot just before.
+        alike = [(w, self.look_alike(rid).tolist()) for w, rid in zip((1.3, 0.6), reversed(self.recent))]
         for s in pool:
             score = -2.2 * abs(s.motion - target)
             match = self.content_score(s, pref) if pref else 0.0
+            for w, row in alike:
+                score -= w * row[s.id] * (0.3 if match > 0.6 else 1.0)  # asked-for shots may look alike
             again = 0.35 if match > 0.6 else 1.0  # a shot that is exactly what was asked for may come back
             score -= again * (1.4 * self.uses.get(s.id, 0) + 2.0 * self.group_uses.get(s.group, 0))
             if prev is not None:
@@ -887,6 +895,34 @@ class _Planner:
             if score > best_score:
                 best, best_score = s, score
         return best
+
+    def look_alike(self, shot_id: int) -> np.ndarray:
+        """How much every shot looks like this one, 0..1 (indexed by shot id): the same colours and
+        layout on screen, the same camera move, the same kind of shot. 1 = near-identical."""
+        row = self._like_rows.get(shot_id)
+        if row is not None:
+            return row
+        shots = self.footage.shots
+        if self._sigs is None:  # once: every shot's fingerprint, camera move, motion and AI kind as arrays
+            self._has_sig = np.array([len(s.sig) == 432 for s in shots])
+            self._sigs = np.array([s.sig if ok else [0] * 432 for s, ok in zip(shots, self._has_sig)], np.float32)
+            self._cams = np.array([s.camera for s in shots])
+            self._motion = np.array([s.motion for s in shots], np.float32)
+            tags = self.d.shot_tags or {}
+            self._kinds = np.array([(tags.get(s.id) or {}).get("kind", "") for s in shots])
+        if self._has_sig[shot_id]:
+            diff = np.abs(self._sigs - self._sigs[shot_id]).mean(axis=1)
+            row = np.clip((40.0 - diff) / 26.0, 0.0, 1.0) * self._has_sig   # 14 or less = a near-duplicate
+        else:
+            row = np.zeros(len(shots), np.float32)
+        if shots[shot_id].camera != "still":
+            row = row + 0.15 * (self._cams == self._cams[shot_id])
+        row = row + 0.1 * (np.abs(self._motion - self._motion[shot_id]) < 0.1)
+        if self._kinds[shot_id]:
+            row = row + 0.15 * (self._kinds == self._kinds[shot_id])
+        row = np.minimum(row, 1.0)
+        self._like_rows[shot_id] = row
+        return row
 
     @staticmethod
     def focus_of(shot: Shot, a: float, b: float) -> tuple[float, float]:
@@ -984,6 +1020,7 @@ class _Planner:
             self.used_windows.setdefault(shot.id, []).append((start, start + need))
             self.group_uses[shot.group] = self.group_uses.get(shot.group, 0) + 1
             self.group_last[shot.group] = self.cut_i
+            self.recent = (self.recent + [shot.id])[-2:]
             self.cut_i += 1
             src = self.footage.sources[shot.source]
             cut = Cut(f0=f0, f1=f1, shot=shot.id, source=src.path, src_start=round(start, 3),
