@@ -567,3 +567,29 @@ def test_preview_of_one_part(analysed, tmp_path, monkeypatch):
     assert 3.0 <= part.duration <= 3.0 + 2 * max(c.frames for c in plan.cuts) / plan.fps
     path, offset = proj.render_part(plan.song_start + 6.0, plan.song_start + 9.0)
     assert abs(probe(path).duration - part.duration) < 0.1 and abs(offset - first.f0 / plan.fps) < 0.01
+
+
+def test_a_scene_left_to_play_out(analysed):
+    """"play out this battle scene": one stretch of the footage at normal speed, running on through
+    the source's own cuts (instead of one camera shot stretched with slow motion)."""
+    from montage_director.project import Project, Settings
+
+    song, footage = analysed
+    proj = Project(settings=Settings(style="hype", seed=15))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    proj.make_plan()
+    s0 = proj.plan.song_start
+    proj.refine_region("search for a scene with fighting and put it here, no cuts just play out this battle scene",
+                       s0 + 4.0, s0 + 11.0)
+    plan = proj.make_plan()
+    fps = plan.fps
+    inside = [c for c in plan.cuts if c.f1 > (4.0 + 0.3) * fps and c.f0 < (11.0 - 0.3) * fps]
+    assert len(inside) == 1, [(c.f0 / fps, c.f1 / fps) for c in inside]
+    cut = inside[0]
+    assert cut.speed == 1.0 and not cut.reverse and not cut.freeze
+    shot = footage.shots[cut.shot]
+    seen = [s for s in footage.shots if s.source == shot.source
+            and s.end > cut.src_start and s.start < cut.src_start + cut.frames / fps]
+    assert len(seen) >= 2, "it plays on through the footage's own cuts"
+    assert abs(cut.src_start - shot.start) < 0.1, "from the first frame of a scene"

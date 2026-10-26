@@ -120,6 +120,7 @@ class SectionDirection:
     cue: str | None = None      # a musical event this starts at ("solo", "drop", ...), resolved by the planner
     hold: bool = False          # one held shot for the whole section
     still: bool = False         # ...and it should be a calm, still shot
+    play_out: bool = False      # ...or a scene from the footage left to play out through its own cuts
     sync_hits: bool = False     # cut on the actual drum hits, not the beat grid
     fixed: bool = False         # start/end were chosen exactly (a selected region): don't move them
     camera: str | None = None   # prefer shots with this camera move: pan | zoom | shaky | still

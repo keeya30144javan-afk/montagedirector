@@ -445,6 +445,7 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
     if ins.hold:
         sd.hold, sd.cut_every = True, 8.0
         sd.still = ins.still
+        sd.play_out = ins.play_out
         sd.energy = 0.0 if sd.still else 0.4
     elif ins.sync:
         sd.sync_hits, sd.sync_on, sd.cut_every = True, ins.sync, 1.0
@@ -469,7 +470,10 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
         sd.energy = 1.0
     elif ins.prefer.get("motion", 0) < 0:
         sd.energy = 0.1
-    sd.prefer = {k: v for k, v in ins.prefer.items() if k != "motion"}
+    # (a scene left to play out keeps "fight scenes": it picks which part of the footage plays)
+    sd.prefer = {k: v for k, v in ins.prefer.items() if k != "motion" or sd.play_out}
+    if sd.play_out and ins.prefer.get("motion", 0) > 0:
+        sd.energy = 0.9
     if ins.camera:
         sd.prefer["camera_" + ins.camera] = 1.0
     fx: dict[str, float] = {}
@@ -505,9 +509,12 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
         sd.keep_cuts = True
         sd.prefer = dict(ins.prefer)
         sd.energy = None
+    if sd.play_out and not ins.effects and not ins.all_effects:
+        sd.effects = dict.fromkeys(EFFECTS, 0.0)  # let it play as it is, unless effects were asked for
     d.sections.append(sd)
 
-    what = ("hold one still shot" if sd.hold and sd.still else "hold one shot" if sd.hold else
+    what = ("hold one still shot" if sd.hold and sd.still else
+            "let one scene play out (no cuts of mine)" if sd.hold and sd.play_out else "hold one shot" if sd.hold else
             f"cut on each {DRUM_WORD.get(sd.sync_on, 'hit')}" if sd.sync_hits else
             "cuts speed up" if sd.ramp else
             f"a cut every {_rate_label(sd.cut_every)}" if ins.cut_rate is not None else

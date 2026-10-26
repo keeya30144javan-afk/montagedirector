@@ -77,9 +77,7 @@ def _gain(before, after) -> bool:
 
 def did_you_mean(prompt: str, base, limit: int = 3) -> list[tuple[str, str]]:
     """[(typed, suggestion)] for words that look misspelt. `base` is the style Direction to read against."""
-    from .apply import read_prompt  # (apply imports nothing from here)
-
-    from .apply import QUOTE_RX
+    from .apply import QUOTE_RX, read_prompt  # (apply imports nothing from here)
 
     text = normalise(QUOTE_RX.sub(" ", prompt))  # titles in quotes are the user's own words
     known = known_words()

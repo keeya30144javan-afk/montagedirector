@@ -23,11 +23,13 @@ from .vocabulary import (
     NORMAL_RX,
     ORDINAL_RX,
     ORDINALS,
+    PLAY_OUT_RX,
     QUERY_SKIP,
     RAMP_RX,
     REST_RX,
     SECTION_RX,
     SECTION_WORDS,
+    SETTINGS,
     SLOW_RX,
     STRONG,
     TRANSITION_WORDS,
@@ -51,6 +53,7 @@ class Instruction:
     all_effects: str | None = None  # more | less | none
     hold: bool = False
     still: bool = False
+    play_out: bool = False         # let the original scene run on through its own cuts
     camera: str | None = None
     sync: str | None = None         # hits | kick | snare
     drum_fx: dict[str, str] = field(default_factory=dict)
@@ -264,11 +267,14 @@ def read_instruction(text: str) -> Instruction:
         complaint = None  # "not too crazy" is a mild ask, not a complaint
     if complaint:  # "it's too choppy", "stop cutting so fast", "hold the shots longer": slower
         take(complaint)
-    m = HOLD_RX.search(work)
-    if m:
+    ins.play_out = bool(PLAY_OUT_RX.search(text))
+    holds = list(HOLD_RX.finditer(work))
+    if holds or ins.play_out:
         ins.hold = True
-        ins.still = "still" in text or (ins.cue == "intro" and "pan" not in text)
-        take(m)
+        ins.still = not ins.play_out and ("still" in text or (ins.cue == "intro" and "pan" not in text))
+        for m in holds:
+            if not PLAY_OUT_RX.fullmatch(m.group(0)):  # keep "the whole battle" for "battle" = action shots
+                take(m)
     if re.search(r"\bpan(?:ning|s)?\b", text):
         ins.camera = "pan"
     elif re.search(r"zoom(?:ing)? in(?:to)? (?:shots?|on)|zoom(?:ing)? shots?|push(?:ing)? in", text):
@@ -372,8 +378,16 @@ def read_instruction(text: str) -> Instruction:
                                 r"group shot|together|all of them|both of them|him|her|them)\b", text))
     ins.frantic = bool(re.search(r"frantic|rapid|flurry|barrage|crazy|insane|nonstop", work))
 
+    # "fighting in space", "a battle on the moon", "space battle" (not "space robots": that describes them)
+    places = [w for w in SETTINGS if re.search(rf"\b(?:in|on|at|into|through|across|over|under|above) (?:the |a |an |"
+                                               rf"outer |deep )?{w}\b|\b{w} (?:battles?|fights?|fighting|scenes?|shots?)\b",
+                                               text)]
+    if places:  # "fighting in space": also looked for in the shot descriptions
+        left = sorted(set(left) | set(places))
+        ins.prefer["_query"] = left[:6]
     query = ins.prefer.pop("_query", None)
-    if query and re.search(r"\b(?:show|shows|showing|use|using|put|have|with|featuring|feature|of|starring|where)\b", text):
+    if query and (places or re.search(r"\b(?:show|shows|showing|use|using|put|have|with|featuring|feature|of|starring|"
+                                      r"where|find|search|look for|looking for)\b", text)):
         ins.prefer["_query"] = query  # "show nappa in the chorus": looked up in the shot descriptions
     ins.understood = bool(ins.on_taps or ins.transition or "crowd" in ins.prefer or "solo" in ins.prefer
                           or ins.drop_at is not None or ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold

@@ -197,6 +197,13 @@ CASES = [
     ("i want it to look like a professional edit", ["?"]),
 ]
 
+CASES += [
+    ("from 1:00 to 1:20 play out a battle in space", ["1:00", "play out", "action", "space"]),
+    ("at 2:10 let the whole fight play, no cuts", ["2:10", "play out", "action"]),
+    ("from 0:30 to 0:45 one uncut fight scene", ["0:30", "play out", "action"]),
+    ("hold one shot of the sunset at the end", ["hold one shot"]),
+]
+
 # Longer, rambling prompts with several instructions, the way people really write them.
 LONG = [
     ("so basically i want the intro to be chill with some calm shots and then when the beat drops i want it to go "

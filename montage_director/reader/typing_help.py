@@ -48,8 +48,9 @@ def typing_help(text: str, mode: str = "idea", has_tags: bool = False, use_ai: b
                     "snare), what to show (fight scenes, explosions, close-ups) or when (at 1:20, the chorus).")
     low = normalise(text)
     if not has_tags and ("crowd" in prefs or "solo" in prefs or prefs.get("_query") or WHO_RX.search(low)):
-        tips.append("Who is in a shot (a name, \"one gundam\", \"many characters\") needs Describe my shots once "
-                    "(Footage section, about a cent), or choose the shot yourself with Pick shot….")
+        tips.append("Who or what is in a shot (a name, \"one gundam\", \"many characters\", \"fighting in space\") "
+                    "needs Describe my shots once (Footage section, about a cent), or choose the shot yourself with "
+                    "Pick shot…. Without it, \"space\" just means dark-looking shots.")
     has_time = bool(TIME_RE.search(low))
     if not has_time and any(re.search(p, low) for k, p in CUES if k in ("drop", "solo", "drums_faster", "hits",
                                                                        "vocals", "stop")):

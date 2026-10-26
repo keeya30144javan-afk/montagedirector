@@ -798,6 +798,8 @@ class _Planner:
                     sid = ids[k % len(ids)]
                 self.order_pos[id(ov)] = k + 1
                 return self.footage.shots[sid]
+        if sd and sd.hold and sd.play_out and not sd.shots:
+            return self.pick_scene(need, pref)
         if sd and sd.hold and not sd.shots:
             pool = [s for s in self.shots if self.allowed(s)] or list(self.shots)
             if pref and self.d.repeats != "never":
@@ -894,6 +896,41 @@ class _Planner:
             score += self.rng.gauss(0, 0.25)
             if score > best_score:
                 best, best_score = s, score
+        return best
+
+    def scene_window(self, shot: Shot, need: float) -> list[tuple[Shot, float]]:
+        """The shots that play, one after another in the source, from the start of `shot` for `need`
+        seconds, with how many seconds of each are seen."""
+        if not hasattr(self, "_by_source"):
+            self._by_source = {}
+            for s in self.footage.shots:
+                self._by_source.setdefault(s.source, []).append(s)
+            for lst in self._by_source.values():
+                lst.sort(key=lambda s: s.start)
+        a, b = shot.start, shot.start + need
+        return [(s, min(b, s.end) - max(a, s.start)) for s in self._by_source.get(shot.source, [])
+                if s.end > a and s.start < b]
+
+    def pick_scene(self, need: float, pref: dict) -> Shot:
+        """Where in the footage to let a scene play out for `need` seconds ("play out this battle"):
+        the stretch that best matches what was asked for, starting on a scene's first frame,
+        with no title cards, blank frames or footage already used."""
+        best, best_score = None, -1e9
+        for s in self.shots:
+            src = self.footage.sources[s.source]
+            if not self.allowed(s) or s.start + need > src.duration - 0.1:
+                continue
+            window = self.scene_window(s, need)
+            total = sum(w for _, w in window) or 1.0
+            share = lambda f: sum(w * f(x) for x, w in window) / total  # noqa: E731
+            score = (2.0 * share(lambda x: self.content_score(x, pref)) if pref else 0.0) \
+                - 3.0 * share(lambda x: x.text) - 3.0 * share(lambda x: not x.usable or x.id in self.avoid) \
+                - 2.0 * share(lambda x: self.uses.get(x.id, 0) > 0) + 0.6 * share(lambda x: x.id in self.favs) \
+                + self.rng.gauss(0, 0.1)
+            if score > best_score:
+                best, best_score = s, score
+        if best is None:  # no stretch is long enough: the longest scene there is
+            best = max(self.shots, key=lambda s: self.footage.sources[s.source].duration - s.start)
         return best
 
     def look_alike(self, shot_id: int) -> np.ndarray:
@@ -1004,8 +1041,10 @@ class _Planner:
             shot = self.pick_shot(t0, need, prev, self.scene_taps.get(f0))
             sd_here = self.sd_at(t0)
             frozen = bool(sd_here and sd_here.freeze_frame and sd_here.shots and shot.id in sd_here.shots)
-            if frozen:
-                speed = 1.0
+            playing_out = bool(sd_here and sd_here.hold and sd_here.play_out and not sd_here.shots)
+            if frozen or playing_out:
+                speed, reverse = 1.0, False
+                need = dur
             elif self.usable_len(shot) < need and not self.d.style.pure:
                 # Shot shorter than the cut: stretch it with slow motion instead of
                 # running past it into the next scene (which reads as an off-beat cut).
@@ -1014,6 +1053,12 @@ class _Planner:
             energetic = self.target_energy(t0, t1) > 0.5
             if frozen:  # the frame the user picked (the thumbnail is the middle of the shot)
                 start = round((shot.start + shot.end) / 2, 3)
+            elif playing_out:  # from the first frame of the scene, on through the footage's own cuts
+                src = self.footage.sources[shot.source]
+                start = round(max(0.0, min(shot.start + 0.04, src.duration - need - 0.05)), 3)
+                for x, _ in self.scene_window(shot, need)[1:]:  # all of it counts as used
+                    self.uses[x.id] = self.uses.get(x.id, 0) + 1
+                    self.group_uses[x.group] = self.group_uses.get(x.group, 0) + 1
             else:
                 start = self.in_point(shot, need, energetic and not reverse, t0, dur, speed)
             self.uses[shot.id] = self.uses.get(shot.id, 0) + 1
@@ -1067,9 +1112,13 @@ class _Planner:
         return lo
 
     def add(self, cuts: list[Cut], frame: int, kind: str, frames: int, intensity: float = 1.0,
-            color: str = "white") -> None:
+            color: str = "white", asked: bool = False) -> None:
         if not 0 <= frame < self.total:
             return
+        sd = self.sd_at(self.song_t(frame))
+        if (not asked and kind not in ("text", "fade_in", "fade_black") and sd is not None and sd.hold
+                and sd.play_out and not any(sd.effects.values())):
+            return  # a scene left to play out as it is: no flashes or zooms the user didn't ask for
         c = cuts[self.cut_index_at(cuts, frame)]
         local = frame - c.f0
         frames = max(1, min(frames, c.frames - local))
@@ -1295,14 +1344,14 @@ class _Planner:
             elif m.action == "reverse":
                 c.reverse = True
             elif m.action == "fade_in":
-                self.add(cuts, f, "fade_in", max(4, int(round((m.duration or 1.0) * self.fps))), 1.0, "black")
+                self.add(cuts, f, "fade_in", max(4, int(round((m.duration or 1.0) * self.fps))), 1.0, "black", asked=True)
             elif m.action in ("flash", "zoom", "shake", "rgb", "invert", "fade_white", "fade_black"):
                 frames = {"flash": 4, "rgb": 4, "invert": 2}.get(m.action, dur_f)
                 if m.action == "fade_black":
                     # end the cut in black: place the fade at the end of the moment
-                    self.add(cuts, max(c.f0, f), m.action, min(dur_f, c.f1 - f), 1.0, "black")
+                    self.add(cuts, max(c.f0, f), m.action, min(dur_f, c.f1 - f), 1.0, "black", asked=True)
                 else:
-                    self.add(cuts, f, m.action, frames, 1.0)
+                    self.add(cuts, f, m.action, frames, 1.0, asked=True)
         return cuts
 
 

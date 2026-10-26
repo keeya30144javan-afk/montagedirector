@@ -75,8 +75,18 @@ NORMAL = (r"back to (?:normal|the flow|the groove|regular|how it was|the melody|
           r"normal pace|regular pace|the flow|groove|steady|medium pace|go back|goes back|melody")
 HOLD = (r"still shot|one shot|single shot|\bhold(?:s|ing)?\b|held shot|panning shot|pan shot|one long shot|"
         r"stay on (?:one|a|the)|linger|let (?:it|the shot) play|don't cut|no cuts|long take|"
+        r"\bplay(?:s|ing)? (?:it |this |that |the \w+ )?(?:out|through)\b|\blet (?:it|the \w+|this \w+) play\b|"
+        r"\buncut\b|\bwithout (?:any )?cuts\b|\b(?:whole|full|entire|complete) (?:fight|battle|scene|sequence)\b|"
         r"\ba still\b|\bstill (?:of|frame|image|picture)\b|\b(?:final|last|closing|ending|end) shot\b|"
         r"\bend (?:it )?(?:on|with) (?:a|one) (?:shot|still|image|picture)\b|group shot|wide shot")
+# "play out this battle scene": let the original footage run on through its own cuts (not one camera shot)
+PLAY_OUT = (r"\bplay(?:s|ing)? (?:it |this |that |the \w+ )?(?:out|through)\b|\blet (?:it|the \w+|this \w+) play\b|"
+            r"\buncut\b|\b(?:whole|full|entire|complete) (?:fight|battle|scene|sequence)\b|\bdon'?t cut away\b|"
+            r"\b(?:fight|battle|scene|sequence) plays? out\b|\bas it (?:is|was) in the (?:show|anime|episode|video)\b")
+# Places people ask for ("fighting in space"): also looked up in the shot descriptions
+SETTINGS = ("space", "orbit", "stars", "galaxy", "planet", "moon", "city", "desert", "ocean", "sea", "underwater",
+            "forest", "jungle", "snow", "rain", "night", "sky", "clouds", "ruins", "volcano", "cave", "mountains",
+            "beach", "school", "street", "rooftop", "arena", "colony", "asteroid", "asteroids", "battleship")
 RAMP = (r"faster and faster|quicker and quicker|more and more cuts|speed(?:s|ing)? up (?:gradually|more and more)|"
         r"gradually (?:faster|quicker|speed(?:s|ing)? up)|build(?:s|ing)? (?:up )?(?:the )?tension|accelerat\w+|"
         r"getting (?:faster|quicker)|ramp(?:s|ing)? up|cuts? speed(?:s|ing)? up|build(?:s|ing)? up (?:the )?(?:speed|pace|cuts)")
@@ -101,6 +111,9 @@ DRUMS = [  # what "on the ..." can mean (pattern, drum)
     (r"drops?", "drop"),
 ]
 CONTENT = [  # (pattern, preferences, what to call it)
+    (r"\b(?:in|into|through|across) (?:outer |deep )?space\b|\bouter space\b|\bspace(?= (?:battles?|fights?|fighting|scenes?|"
+     r"shots?|combat|war|dogfights?)\b)|\bin orbit\b|\bamong the stars\b|\bstarfield\b|\basteroid fields?\b", {"bright": -0.6},
+     "space (dark backgrounds)"),
     (r"action[- ]packed|punch(?:es|ing)?|fight(?:s|ing)?|kicking|attack(?:s|ing)?|combat|battle(?:s)?|beat ?downs?|combos?|"
      r"brawl(?:s|ing)?|clash(?:es|ing)?|sword ?fights?|gun ?fights?|shoot ?outs?|chases?|action(?: scenes| shots)?",
      {"motion": 1.0}, "action shots"),
@@ -143,7 +156,8 @@ shows showing drawn real vibe vibes juxtaposition contrast subject matter liter 
 crazy insane wild chill hype hyped intense calm epic hard harder go goes going here there this that
 dont doesnt wont cant isnt not never no any anything nothing lot lots alot thing stuff kind sure okay maybe
 longer shorter play plays playing less fewer more
-quick quicker slower faster cool sick nice good great best better bad kind sort feel""".split())
+quick quicker slower faster cool sick nice good great best better bad kind sort feel
+search find finding look looking scene battle play plays playing out through here""".split())
 FILLER = re.compile(r"\b(i want|i'd like|i would like|i need|please|make it|make the|make this|the edit|this edit|edit|it|"
                     r"should|would|be|have|has|to|of|the|a|an|and|with|for|in|on|is|are|that|this|my|me|i|you|"
                     r"thanks|thank you|ok|okay|like|just|really|very|so|some|lot|lots|also|too|then|there|"
@@ -159,7 +173,7 @@ def _rx(p: str) -> re.Pattern:
 
 EFFECT_RX = [(_rx(p), e) for p, e in EFFECT_WORDS]
 FAST_RX, SLOW_RX, NORMAL_RX = _rx(FAST), _rx(SLOW), _rx(NORMAL)
-HOLD_RX, RAMP_RX, VELOCITY_RX = _rx(HOLD), _rx(RAMP), _rx(VELOCITY)
+HOLD_RX, RAMP_RX, VELOCITY_RX, PLAY_OUT_RX = _rx(HOLD), _rx(RAMP), _rx(VELOCITY), _rx(PLAY_OUT)
 CONTENT_RX = [(_rx(p), pref, name) for p, pref, name in CONTENT]
 DRUM_ALT = "|".join(f"(?:{p})" for p, _ in DRUMS)
 SECTION_RX = _rx("|".join(sorted((re.escape(w) for w in SECTION_WORDS), key=len, reverse=True)))
