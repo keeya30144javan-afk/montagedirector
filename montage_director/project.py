@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import dataclasses
 import logging
 import random
 import re
@@ -377,6 +378,32 @@ class Project:
         new = self.renderer.render(self.plan, out, PREVIEW, cancel, progress)
         self.previous_preview, self.preview_path = self.preview_path, new
         return new
+
+    def part_plan(self, start: float, end: float) -> EditPlan:
+        """Just the cuts that play between start and end (song seconds), as a plan of its own."""
+        plan = self.plan
+        if plan is None:
+            raise ValueError("Make an edit first.")
+        fa = (start - plan.song_start) * plan.fps
+        fb = (end - plan.song_start) * plan.fps
+        cuts = [c for c in plan.cuts if c.f1 > fa and c.f0 < fb]
+        if not cuts:
+            raise ValueError("That part isn't in the edit.")
+        first = cuts[0].f0  # whole cuts, so the preview shows exactly what the full edit will
+        shifted = [dataclasses.replace(c, f0=c.f0 - first, f1=c.f1 - first) for c in cuts]
+        return dataclasses.replace(plan, cuts=shifted, frames=shifted[-1].f1,
+                                   song_start=round(plan.song_start + first / plan.fps, 3))
+
+    def render_part(self, start: float, end: float, cancel=None, progress=None) -> tuple[Path, float]:
+        """A quick preview of only the selected part. Returns (file, where it starts in the edit, seconds)."""
+        part = self.part_plan(start, end)
+        out = workspace_dir() / "previews" / f"part_{int(time.time() * 1000)}.mp4"
+        for old in out.parent.glob("part_*.mp4") if out.parent.is_dir() else []:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        return self.renderer.render(part, out, PREVIEW, cancel, progress), part.song_start - self.plan.song_start
 
     def export(self, out: str | Path, preset: str = "high", cancel=None, progress=None) -> Path:
         """Render the full-quality video with one of EXPORT_PRESETS."""

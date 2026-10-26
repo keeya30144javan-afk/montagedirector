@@ -547,3 +547,23 @@ def test_look_alike_shots_are_kept_apart(analysed):
     finally:
         _Planner.look_alike = real
     assert now <= 1 and now < without, (now, without)
+
+
+def test_preview_of_one_part(analysed, tmp_path, monkeypatch):
+    """Preview part: only the cuts in the selection, frame-exact, with the music from that point."""
+    from montage_director.project import Project, Settings
+
+    monkeypatch.setenv("MONTAGE_DATA_DIR", str(tmp_path))
+    song, footage = analysed
+    proj = Project(settings=Settings(style="hype", seed=14))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    plan = proj.make_plan()
+    part = proj.part_plan(plan.song_start + 6.0, plan.song_start + 9.0)
+    part.validate()
+    first = next(c for c in plan.cuts if c.f1 > 6.0 * plan.fps)
+    assert part.cuts[0].shot == first.shot and part.cuts[0].f0 == 0
+    assert abs(part.song_start - (plan.song_start + first.f0 / plan.fps)) < 0.01
+    assert 3.0 <= part.duration <= 3.0 + 2 * max(c.frames for c in plan.cuts) / plan.fps
+    path, offset = proj.render_part(plan.song_start + 6.0, plan.song_start + 9.0)
+    assert abs(probe(path).duration - part.duration) < 0.1 and abs(offset - first.f0 / plan.fps) < 0.01

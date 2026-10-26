@@ -39,16 +39,18 @@ class TimelineMixin:
             self.region = None
             self.region_chip.hide()
             self.pick_btn.hide()
+            self.part_btn.hide()
             self.refine_edit.setPlaceholderText(self.REFINE_HINT)
+            self.leave_part_preview()
             return
         self.region = (a, b)
         self.region_chip.setText(f"{_mmss(a)}–{_mmss(b)}  ✕")
         self.region_chip.show()
         self.pick_btn.setVisible(self.project.plan is not None)
+        self.part_btn.setVisible(self.project.plan is not None)
         self.refine_edit.setPlaceholderText(f"What should happen from {_mmss(a)} to {_mmss(b)}? e.g. "
                                             "\"quicker cuts with punches\", \"hold one shot\", \"cut on the hits\"")
         self.refine_edit.setFocus()
-
 
     def pick_shot_for_region(self):
         region = getattr(self, "region", None)
@@ -69,14 +71,12 @@ class TimelineMixin:
         what = "your shot" if len(dlg.chosen) == 1 else f"your {len(dlg.chosen)} shots"
         self._replan(f"Putting {what} in {_mmss(a)}–{_mmss(b)}...")
 
-
     def _marks_changed(self, before: dict):
         proj = self.project
         proj.history.append(before)
         proj.future.clear()
         if proj.plan is not None:
             self._replan("Updating your ★ / ✕ shots...")
-
 
     def browse_shots(self):
         proj = self.project
@@ -90,7 +90,6 @@ class TimelineMixin:
         dlg.exec()
         if dlg.marks_changed:
             self._marks_changed(before)
-
 
     def describe_shots(self):
         proj = self.project
@@ -139,7 +138,6 @@ class TimelineMixin:
 
         self._run("refine", work, done)
 
-
     def edit_texts(self):
         proj = self.project
         length = proj.plan.duration if proj.plan else 0.0
@@ -153,7 +151,6 @@ class TimelineMixin:
         else:
             self._set_dirty(True)
 
-
     def edit_scene_keys(self):
         dlg = SceneKeys(self, self.project.scene_keys)
         if dlg.exec() != QDialog.Accepted:
@@ -165,7 +162,6 @@ class TimelineMixin:
             self.project.apply_taps()
             self._replan("Updating your scene taps...")
 
-
     def move_tap(self, old: float, new: float, exact: bool):
         if self.job is not None or self.tapping:
             return
@@ -175,7 +171,6 @@ class TimelineMixin:
             return
         self.timeline.set_taps(self.project.taps)
         self._replan("Moving your tap" + (" (exactly where you put it)..." if exact else "..."))
-
 
     def insert_instruction(self, t: float):
         proj = self.project
@@ -206,7 +201,6 @@ class TimelineMixin:
         a, b = dlg.scope.currentData()
         self.refine_part(text, a, b)
 
-
     def toggle_tapping(self):
         if self.tapping:
             self.stop_tapping(apply=True)
@@ -227,7 +221,6 @@ class TimelineMixin:
         self.tap_rate = 0.5 if self.half_speed.isChecked() else 1.0
         self.player.setPlaybackRate(self.tap_rate)
         self.player.play()
-
 
     def stop_tapping(self, apply: bool):
         self.tapping = False
@@ -250,7 +243,6 @@ class TimelineMixin:
         self.project.apply_taps()
         self._replan(f"Rebuilding the edit around your {len(self.project.taps)} taps...")
 
-
     def on_tap_key(self, key):
         if key == Qt.Key_Escape:
             self.stop_tapping(apply=False)
@@ -271,7 +263,6 @@ class TimelineMixin:
         summary = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in counts.items() if n)
         self.status.setText(f"{TAP_HELP}   [{summary or 'no taps yet'}]")
 
-
     def _timeline_view(self, a: float, b: float):
         tl = self.timeline
         full = max(tl.full_b - tl.full_a, 1e-6)
@@ -282,10 +273,8 @@ class TimelineMixin:
         self.timeline_bar.setEnabled(tl.zoomed())
         self.timeline_bar.blockSignals(False)
 
-
     def _timeline_scrolled(self, value: int):
         self.timeline.scroll_to(self.timeline.full_a + value / 100.0)
-
 
     def remove_taps(self, times: list):
         if self.job is not None or self.tapping or not times:
@@ -295,7 +284,6 @@ class TimelineMixin:
         self.timeline.set_taps(self.project.taps)
         self._replan(f"Taking out {n} tap{'s' if n != 1 else ''}...")
 
-
     def clear_taps(self):
         if self.job is not None or not self.project.taps:
             return
@@ -303,7 +291,6 @@ class TimelineMixin:
         self.project.clear_taps()
         self.timeline.set_taps([])
         self._replan("Removing your taps...")
-
 
     def region_removed(self, t: float):
         if self.job is not None:
@@ -313,7 +300,6 @@ class TimelineMixin:
             self.project.history.pop()
             return
         self._replan("Undoing that section edit...")
-
 
     def refine_part(self, text: str, a: float, b: float):
         """Change one part of the song (a selection, or Insert instruction here)."""
@@ -337,7 +323,6 @@ class TimelineMixin:
                                 + "  (playing from there)")
 
         self._run("refine", work_region, done_region)
-
 
     def drops_changed(self, drops: list):
         """The user marked or removed a drop on the timeline: re-plan around it."""

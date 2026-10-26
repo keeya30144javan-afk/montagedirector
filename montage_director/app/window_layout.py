@@ -134,7 +134,6 @@ class LayoutMixin:
         bar.addWidget(self.project_label)
         self.dirty = False
 
-
     def _build_sidebar(self) -> QWidget:
         side = QWidget()
         side.setObjectName("Sidebar")
@@ -295,7 +294,6 @@ class LayoutMixin:
         outer.addWidget(bottom)
         return side
 
-
     def _build_main(self) -> QWidget:
         main = QWidget()
         v = QVBoxLayout(main)
@@ -393,6 +391,11 @@ class LayoutMixin:
         self.pick_btn.clicked.connect(self.pick_shot_for_region)
         self.pick_btn.hide()
         refine.addWidget(self.pick_btn)
+        self.part_btn = QPushButton("▶ Preview part")
+        self.part_btn.setToolTip("Render and play only the selected part: a few seconds instead of the whole edit")
+        self.part_btn.clicked.connect(self.preview_part)
+        self.part_btn.hide()
+        refine.addWidget(self.part_btn)
         self.refine_edit = QLineEdit()
         self.refine_edit.setPlaceholderText(self.REFINE_HINT)
         self.refine_edit.returnPressed.connect(self.refine)
@@ -449,7 +452,6 @@ class LayoutMixin:
         bar.addWidget(folder)
         v.addLayout(bar)
         return main
-
 
     def _init_player(self):
         try:

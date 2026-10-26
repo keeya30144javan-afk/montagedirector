@@ -58,7 +58,7 @@ It reads a prompt in four steps, one file each:
 3. `instruction.py` reads one instruction: **where** it applies and **what** it asks for.
 4. `apply.py` builds the `Direction`: the whole edit first, then parts of the song, then timed sections, so the more specific instruction wins.
 
-Two more files sit beside them. `vocabulary.py` has every word list, and `typing_help.py` has the speech-bubble tips.
+Three more files sit beside them. `vocabulary.py` has every word list, `spelling.py` has the "did you mean…?" suggestions, and `typing_help.py` has the speech-bubble tips.
 
 **To teach it a new phrase:**
 1. Add the phrase to `tests/phrasings.py`, along with the words you expect in the reading.
@@ -78,7 +78,7 @@ The `MainWindow` class is split by job. Each file adds methods to the same windo
 | `window_layout.py` | Building the menus, toolbar, sidebar and main area |
 | `window_files.py` | New / open / save / recent projects, autosave, crash recovery |
 | `window_timeline.py` | Tap to Direct, selected parts, markers, drops, shot picking, text cards, scene keys |
-| `window_preview.py` | Video preview, play/seek, before/after compare |
+| `window_preview.py` | Video preview, play/seek, before/after compare, previewing one selected part |
 | `dialogs.py` | Pop-ups: settings, shot picker, instruction box, text cards, scene keys |
 | `widgets.py` | Custom widgets: the timeline, drop lists, style grid, speech bubble |
 | `common.py` | Shared helpers, constants and help texts |

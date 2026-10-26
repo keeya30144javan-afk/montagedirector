@@ -27,7 +27,6 @@ class ProjectFilesMixin:
         if hasattr(self, "project_label"):
             self.project_label.setText((name or "Unsaved project") + (" (unsaved changes)" if mark else ""))
 
-
     def maybe_save(self) -> bool:
         """Ask to save unsaved changes. False means the user cancelled."""
         if not self.dirty or self.project.plan is None:
@@ -42,12 +41,10 @@ class ProjectFilesMixin:
             return not self.dirty
         return box.clickedButton() is discard
 
-
     def _remember_recent(self, path: Path):
         data = store.load()
         recent = [p for p in data.get("recent_projects", []) if p != str(path)]
         store.save({**data, "recent_projects": [str(path)] + recent[:9]})
-
 
     def _fill_recent(self):
         self.recent_menu.clear()
@@ -64,12 +61,10 @@ class ProjectFilesMixin:
         self.recent_menu.addAction("Clear this list").triggered.connect(
             lambda: store.save({**store.load(), "recent_projects": []}))
 
-
     def open_recent(self, path: Path):
         if self.job is not None or not self.maybe_save():
             return
         self.load_project(path)
-
 
     @staticmethod
     def _fresh_project() -> Project:
@@ -80,11 +75,9 @@ class ProjectFilesMixin:
         proj.scene_keys = {**DEFAULT_SCENE_KEYS, **{k: v for k, v in saved.items() if v in SCENE_PRESETS}}
         return proj
 
-
     @staticmethod
     def _recovery_path() -> Path:
         return data_dir() / "recovery.mdproj"
-
 
     def _autosave(self):
         if self.dirty and self.project.plan is not None and self.job is None:
@@ -92,7 +85,6 @@ class ProjectFilesMixin:
                 self.project.save_copy(self._recovery_path())
             except OSError as exc:
                 log.warning("Autosave failed: %s", exc)
-
 
     def _offer_recovery(self):
         path = self._recovery_path()
@@ -108,18 +100,15 @@ class ProjectFilesMixin:
         else:
             path.unlink(missing_ok=True)
 
-
     def ask_new_project(self):
         if self.job is not None or not self.maybe_save():
             return
         self.new_project()
 
-
     def _projects_dir(self) -> Path:
         folder = workspace_dir() / "Projects"
         folder.mkdir(parents=True, exist_ok=True)
         return folder
-
 
     def new_project(self):
         if self.job is not None:
@@ -142,13 +131,11 @@ class ProjectFilesMixin:
         self.status.setText("New project.")
         self._set_busy(False)
 
-
     def save_project(self):
         if self.project.path:
             self._write_project(self.project.path)
         else:
             self.save_project_as()
-
 
     def save_project_as(self):
         proj = self.project
@@ -157,7 +144,6 @@ class ProjectFilesMixin:
         path, _ = QFileDialog.getSaveFileName(self, "Save project", str(default), "Montage Director project (*.mdproj)")
         if path:
             self._write_project(Path(path))
-
 
     def _write_project(self, path: Path):
         proj = self.project
@@ -177,7 +163,6 @@ class ProjectFilesMixin:
         self._set_dirty(False)
         self.status.setText(f"Saved {saved.name}")
 
-
     def open_project(self):
         if self.job is not None or not self.maybe_save():
             return
@@ -185,7 +170,6 @@ class ProjectFilesMixin:
                                               "Montage Director project (*.mdproj)")
         if path:
             self.load_project(Path(path))
-
 
     def load_project(self, path: Path, recovered: bool = False):
         try:

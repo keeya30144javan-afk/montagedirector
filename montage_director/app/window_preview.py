@@ -13,7 +13,9 @@ from .common import _mmss, open_in_system
 
 class PreviewMixin:
     """Part of MainWindow (see main_window.py). The video preview: loading, play/pause, seeking, before/after
-    compare."""
+    compare, and quick previews of one selected part."""
+
+    _part_offset: float | None = None   # playing a part preview: where it starts in the edit (seconds)
 
     def toggle_compare(self, before: bool):
         proj = self.project
@@ -29,9 +31,13 @@ class PreviewMixin:
             return
         from PySide6.QtMultimedia import QMediaPlayer
 
+        if self._part_offset is not None:
+            self._part_offset = None
+            self._seek_after_load = (0, False)
+            self.player.setSource(QUrl.fromLocalFile(str(path)))
+            return
         self._seek_after_load = (self.player.position(), self.player.playbackState() == QMediaPlayer.PlayingState)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
-
 
     def _on_media_status(self, status):
         from PySide6.QtMultimedia import QMediaPlayer
@@ -49,7 +55,6 @@ class PreviewMixin:
             if playing:
                 self.player.play()
 
-
     def load_preview(self, path: Path | None):
         if not path:
             return
@@ -57,6 +62,8 @@ class PreviewMixin:
             self.placeholder.setText(f"Preview saved:\n{path}\n\nUse \"Open in player\" to watch it.")
             return
         self.video_stack.setCurrentWidget(self.video_widget)
+        self._part_offset = None
+        self._seek_after_load = None
         tl = self.timeline
         focus, self._focus_at = getattr(self, "_focus_at", None), None
         if focus is not None and self.project.plan is not None:  # just changed a part: play from there
@@ -65,7 +72,6 @@ class PreviewMixin:
             self._seek_after_load = (int(max(0.0, tl.start - tl.full_a) * 1000), True)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()
-
 
     def toggle_play(self):
         if not self.player:
@@ -78,24 +84,64 @@ class PreviewMixin:
         else:
             self.player.play()
 
-
     def seek_seconds(self, seconds: float):
-        if self.player:
-            self.player.setPosition(int(seconds * 1000))
+        if not self.player:
+            return
+        if self._part_offset is not None:
+            inside = seconds - self._part_offset
+            if 0 <= inside * 1000 <= self.player.duration():
+                self.player.setPosition(int(inside * 1000))
+            else:  # clicked outside the part: back to the whole edit, from there
+                self.leave_part_preview(seconds)
+            return
+        self.player.setPosition(int(seconds * 1000))
 
+    def preview_part(self):
+        """Render just the selected part (reusing what's already rendered) and play it."""
+        proj, region = self.project, getattr(self, "region", None)
+        if proj.plan is None or not region:
+            return
+        a, b = region
+
+        def work(cancel, progress):
+            progress(0.02, f"Rendering {_mmss(a)}–{_mmss(b)} only...")
+            return proj.render_part(a, b, cancel, progress)
+
+        def done(result):
+            path, offset = result
+            if self.player is None:
+                open_in_system(Path(path))
+                return
+            self.video_stack.setCurrentWidget(self.video_widget)
+            self._part_offset = offset
+            self.player.setSource(QUrl.fromLocalFile(str(path)))
+            self.player.play()
+            self.status.setText(f"Playing {_mmss(a)}–{_mmss(b)} only. Clear the selection (✕) or click the timeline "
+                                "outside it to go back to the whole edit.")
+
+        self._run("part", work, done)
+
+    def leave_part_preview(self, at: float | None = None):
+        """Back from a part preview to the whole edit (at `at` seconds into the edit, or where the part was)."""
+        if self._part_offset is None or not self.player:
+            return
+        pos = at if at is not None else self._part_offset + self.player.position() / 1000
+        self._part_offset = None
+        path = self.project.preview_path
+        if path and Path(path).exists():
+            self._seek_after_load = (int(max(0.0, pos) * 1000), False)
+            self.player.setSource(QUrl.fromLocalFile(str(path)))
 
     def _on_position(self, ms: int):
         if not self.slider.isSliderDown():
             self.slider.setValue(ms)
         dur = self.player.duration() if self.player else 0
         self.time_label.setText(f"{_mmss(ms / 1000)} / {_mmss(dur / 1000)}")
-        self.timeline.set_position(ms / 1000)
-
+        self.timeline.set_position(ms / 1000 + (self._part_offset or 0.0))
 
     def open_preview(self):
         if self.project.preview_path and Path(self.project.preview_path).exists():
             open_in_system(Path(self.project.preview_path))
-
 
     def open_exports(self):
         folder = workspace_dir() / "Exports"

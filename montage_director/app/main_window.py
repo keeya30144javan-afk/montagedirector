@@ -186,7 +186,7 @@ class MainWindow(LayoutMixin, ProjectFilesMixin, TimelineMixin, PreviewMixin, QM
             self.tap_btn.setEnabled(has_plan)
         self.make_btn.setEnabled(not busy)
         self.stop_btn.setEnabled(busy)
-        for w in (self.refine_btn, self.variation_btn, self.export_btn, self.refine_edit):
+        for w in (self.refine_btn, self.variation_btn, self.export_btn, self.refine_edit, self.part_btn):
             w.setEnabled(has_plan)
         if hasattr(self, "undo_btn"):
             can_undo, can_redo = has_plan and bool(self.project.history), has_plan and bool(self.project.future)
@@ -197,7 +197,7 @@ class MainWindow(LayoutMixin, ProjectFilesMixin, TimelineMixin, PreviewMixin, QM
             prev = self.project.previous_preview
             self.compare_btn.setEnabled(not busy and bool(prev) and Path(prev).exists())
         self.make_btn.setText({"make": "Making your edit...", "refine": "Refining...",
-                               "export": "Exporting..."}.get(self.busy_kind, "Make Edit") if busy else "Make Edit")
+                               "export": "Exporting...", "part": "Rendering the part..."}.get(self.busy_kind, "Make Edit") if busy else "Make Edit")
 
     def _on_progress(self, frac: float, msg: str):
         self.progress.setValue(int(frac * 1000))
