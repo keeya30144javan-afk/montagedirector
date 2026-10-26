@@ -136,7 +136,7 @@ EFFECT_WORDS = [  # (pattern, effect)
 FAST = (r"fast(?:er)?|quick(?:er|ly)?|rapid(?:ly)?|hype(?:d)?|aggressive|crazy|insane|intense|chaotic|wild|"
         r"go(?:es)? off|go hard|goes hard|speed (?:it )?up|speeds up|pick(?:s)? (?:it |back )?up|picks back up|energetic|"
         r"high energy|frantic|flurry|barrage|hectic|nonstop|hard[- ]hitting|lit|snappy|choppy|rapid fire|"
-        r"go (?:all )?out|turn (?:it )?up|amp(?:ed)? (?:it )?up|go nuts|go ham|explode|hit hard|hits hard|"
+        r"go (?:all )?out|turn (?:it )?up|amp(?:ed)? (?:it )?up|go nuts|go ham|explode|hit hard|hits hard|hit harder|hits harder|harder|"
         r"more cuts|cut more|more often|shorter cuts")
 SLOW = (r"slow(?:er)?(?! motion)|slow (?:it )?down|slows down|calm(?:er)?|chill(?:er)?|mellow|relax(?:ed|ing)?|gentle|"
         r"peaceful|soft(?:er)?|emotional|sad|melanchol(?:y|ic)|laid back|take it easy|long(?:er)? (?:shots|cuts|clips)|"
@@ -488,13 +488,17 @@ def read_instruction(text: str) -> Instruction:
         ins.sync = _drum_of(m.group(1))
         take(m)
     m = re.search(r"coincid\w+|on the hits|on each hit|every hit|each hit|with the hits|on the drums|with the drums|"
-                  r"hit sync|line up with (?:the )?(?:drums|hits)|match the hits|with those", work)
+                  r"hit sync|line up with (?:the )?(?:drums|hits)|match(?:es|ing)? the (?:hits|drums|drumming)|with those|"
+                  r"follow(?:s|ing)? the drums|cut on them|on those hits|\bin sync\b|\bsync(?:ed|s)?(?: it| up)?"
+                  r"(?: (?:with|to) (?:the )?\w+)?", work)
     if m and not ins.sync:
         ins.sync = "hits"
         take(m)
     if ins.cue == "hits" and not ins.sync and not ins.drum_fx:
         ins.sync = "hits"
 
+    if re.search(r"\b(?:cut|cuts|edit|edits)?\s*(?:to|on|with) the beat\b", work) and _cut_rate(work) is None:
+        work = re.sub(r"(?:to|on|with) the beat\b", "on every beat", work)
     rate = _cut_rate(work)
     if rate is not None:
         ins.cut_rate = rate
@@ -1035,7 +1039,8 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
             f"cut on each {DRUM_WORD.get(sd.sync_on, 'hit')}" if sd.sync_hits else
             "cuts speed up" if sd.ramp else
             f"a cut every {_rate_label(sd.cut_every)}" if ins.cut_rate is not None else
-            _pace_note(pace) if pace is not None else "action" if sd.energy == 1.0 else "")
+            _pace_note(pace) if pace is not None else "action" if sd.energy == 1.0 else
+            {"none": "no effects", "less": "toned-down effects", "more": "more effects"}.get(ins.all_effects or "", ""))
     extras = []
     if ins.prefer_names:
         extras.append(", ".join(ins.prefer_names))
@@ -1088,12 +1093,26 @@ def region_direction(text: str, start: float, end: float) -> tuple[SectionDirect
     probe = Direction(style=copy.deepcopy(STYLES[DEFAULT_STYLE]), look=Look())
     notes: list[str] = []
     ins = read_instruction(normalise(text))
+    if not ins.understood and re.search(r"\bbuild(?:s|ing)?(?: it)?(?: up)?\b|\bbuild-?up\b|\bbuild the tension\b", text.lower()):
+        ins.ramp, ins.understood = True, True  # "this part should build up"
     if not ins.understood:
         return None, notes
     ins.times, ins.cue, ins.span, ins.occurrence = [], None, None, None
-    _add_section(probe, ins, notes, window=(start, end))
+    moments, ins.moments = list(ins.moments), []  # freeze / fades happen at the edges of the selection
+    others = (ins.pace is not None or ins.cut_rate is not None or ins.effects or ins.all_effects or ins.hold or ins.sync
+              or ins.drum_fx or ins.prefer or ins.ramp or ins.velocity or ins.camera)
+    if others:
+        _add_section(probe, ins, notes, window=(start, end))
     if not probe.sections:
-        return None, notes
+        if not moments:
+            return None, notes
+        probe.sections.append(SectionDirection(start=start, end=end, fixed=True, only_moments=True))
+        notes.append(f"⏱ {_mmss(start)}–{_mmss(end)}: " + ", ".join(MOMENT_WORD.get(a, a) for a in moments))
     sd = probe.sections[0]
+    sd.moments = moments
     sd.note = text.strip()
+    if moments and sd.what:
+        sd.what += ", " + ", ".join(MOMENT_WORD.get(a, a) for a in moments)
+    elif moments:
+        sd.what = ", ".join(MOMENT_WORD.get(a, a) for a in moments)
     return sd, notes

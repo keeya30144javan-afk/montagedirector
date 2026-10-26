@@ -392,3 +392,18 @@ def test_ai_can_cut_on_drums_and_put_effects_on_them(analysed):
     assert kicks and sum(1 for t in starts if min(abs(t - k) for k in kicks) <= 1 / 24 + 0.01) >= 0.8 * len(starts)
     flashes = [(c.f0 + e.frame) / 24 for c in plan.cuts for e in c.effects if e.kind == "flash" and c.f0 / 24 >= 8.5]
     assert len(flashes) >= 0.6 * len(kicks)
+
+
+def test_freeze_in_a_selected_part(analysed):
+    from montage_director.project import Project, Settings
+
+    song, footage = analysed
+    proj = Project(settings=Settings(style="hype", seed=4))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    before = proj.make_plan()
+    proj.refine_region("freeze", 12.0, 15.0)
+    plan = proj.make_plan()
+    assert any(c.freeze and abs(c.f0 / plan.fps - 12.0) < 0.3 for c in plan.cuts)
+    early = lambda p: [(c.f0, c.shot) for c in p.cuts if c.f1 / p.fps <= 11.0]
+    assert early(before) == early(plan), "a freeze-only edit must not re-cut the rest"

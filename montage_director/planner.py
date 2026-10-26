@@ -438,6 +438,12 @@ class _Planner:
         # Region refinements ("from 1:36 to 2:30: quicker cuts") win over everything they overlap.
         for rg in self.d.regions:
             a, b = rg.start, rg.end
+            for act in rg.moments:  # freeze at the start of the selection, fades at its end
+                at = max(a, b - 1.5) if act == "fade_black" else a
+                self.d.moments.append(Moment(time=at, action=act, duration=min(1.5, b - a) if act == "fade_black" else 1.0))
+            if rg.only_moments:
+                self.timeline_notes.append(f"{_mmss(a)}–{_mmss(b)} (your section edit): {rg.what or rg.note}")
+                continue
             carved = []
             for sd in kept:
                 if sd.end <= a or sd.start >= b:
@@ -457,7 +463,7 @@ class _Planner:
             reg.hit_times = None
             carved.append(reg)
             kept = sorted(carved, key=lambda s: s.start)
-            self.timeline_notes.append(f"{_mmss(a)}–{_mmss(b)} (your section edit): {rg.note}")
+            self.timeline_notes.append(f"{_mmss(a)}–{_mmss(b)} (your section edit): {rg.what or rg.note}")
         self.d.sections = [sd for sd in kept if sd.end > sd.start + 0.05]
 
     def hold_at(self, t: float) -> SectionDirection | None:

@@ -146,3 +146,19 @@ def test_every_time_it_happens():
 def test_everyday_phrasing(prompt, note):
     d = read(prompt)
     assert not d.unclear and any(note in n for n in d.notes), d.notes
+
+
+@pytest.mark.parametrize("text, check", [
+    ("make it hit harder", lambda sd: sd.cut_every == 1.0),
+    ("match the drums", lambda sd: sd.sync_hits),
+    ("cut to the beat here", lambda sd: sd.cut_every == 1.0),
+    ("this part should build up", lambda sd: sd.ramp),
+    ("no effects here", lambda sd: all(v == 0 for v in sd.effects.values())),
+    ("freeze", lambda sd: sd.moments == ["freeze"] and sd.only_moments),
+    ("fade out", lambda sd: sd.moments == ["fade_black"]),
+])
+def test_selected_part_phrasing(text, check):
+    from montage_director.reader import region_direction
+
+    sd, _ = region_direction(text, 10.0, 20.0)
+    assert sd is not None and check(sd), text

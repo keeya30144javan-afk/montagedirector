@@ -160,9 +160,11 @@ class Project:
 
         sd, notes = region_direction(request, start, end)
         if sd is None:
-            raise ValueError("I didn't understand that change for the selected part. Try words like "
-                             "quicker cuts, slower cuts, hold one shot, cut on the hits, punches, fight scenes, "
-                             "flashes, shake, slow motion, or back to the flow.")
+            raise ValueError(f"I didn't understand \"{request.strip()}\" for the selected part. Try things like: "
+                             "quicker cuts, slower cuts, hold one shot, cut on the hits / kick / snare, fight scenes, "
+                             "explosions, close-ups, dark scenes, more flashes, flash on every snare, zoom, shake, "
+                             "slow motion, glitch, faster and faster cuts, velocity edit, freeze, fade out, no effects, "
+                             "or back to the flow. (Or press What can I say? under your idea for the full list.)")
         # A newer edit of the same stretch replaces the older one.
         self.direction.regions = [r for r in self.direction.regions if r.end <= start or r.start >= end]
         self.direction.regions.append(sd)
