@@ -20,6 +20,22 @@ SECTION_COLORS = {
 STYLESHEET = f"""
 * {{ font-family: "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif; font-size: 13px; color: {TEXT}; }}
 QMainWindow, QDialog {{ background: {BG}; }}
+QMenuBar {{ background: {PANEL}; border-bottom: 1px solid {LINE}; padding: 2px 6px; }}
+QMenuBar::item {{ background: transparent; padding: 5px 10px; border-radius: 4px; color: {TEXT}; }}
+QMenuBar::item:selected {{ background: {PANEL_2}; }}
+QMenu {{ background: {PANEL_2}; border: 1px solid {LINE}; padding: 4px; }}
+QMenu::item {{ padding: 6px 28px 6px 14px; border-radius: 4px; }}
+QMenu::item:selected {{ background: {ACCENT}; color: white; }}
+QMenu::item:disabled {{ color: #565b73; }}
+QMenu::separator {{ height: 1px; background: {LINE}; margin: 4px 8px; }}
+QToolBar {{ background: {PANEL}; border: none; border-bottom: 1px solid {LINE}; spacing: 2px; padding: 3px 8px; }}
+QToolBar::separator {{ background: {LINE}; width: 1px; margin: 4px 6px; }}
+QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 5px 10px; }}
+QToolButton:hover {{ border-color: {ACCENT}; background: {PANEL_2}; }}
+QToolButton:pressed {{ background: {LINE}; }}
+QToolButton:disabled {{ color: #565b73; }}
+QToolButton::menu-indicator {{ image: none; width: 0; }}
+QLabel#ProjectName {{ color: {MUTED}; padding-right: 6px; }}
 QWidget#Sidebar {{ background: {PANEL}; border-right: 1px solid {LINE}; }}
 QScrollArea {{ border: none; background: transparent; }}
 QScrollArea > QWidget > QWidget {{ background: transparent; }}

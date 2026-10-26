@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBo
                                QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu, QMessageBox,
                                QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QScrollBar, QSizePolicy,
-                               QSlider,
+                               QSlider, QToolButton,
                                QStackedLayout, QVBoxLayout, QWidget)
 
 from .. import __version__
@@ -286,27 +286,148 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------------------- layout
     def _build_menus(self):
-        def action(menu, text, slot, keys=()):
+        def act(text, slot, keys=(), tip=""):
             a = QAction(text, self)
             a.setShortcuts([QKeySequence(k) for k in keys])
+            if tip:
+                a.setToolTip(tip)
             a.triggered.connect(slot)
-            menu.addAction(a)
             return a
 
+        self.new_action = act("New project", self.ask_new_project, ["Ctrl+N"], "Start a new project (Ctrl+N)")
+        self.open_action = act("Open project...", self.open_project, [QKeySequence.Open], "Open a saved project (Ctrl+O)")
+        self.save_action = act("Save project", self.save_project, [QKeySequence.Save], "Save this project (Ctrl+S)")
+        self.save_as_action = act("Save project as...", self.save_project_as, ["Ctrl+Shift+S"])
+        self.export_action = act("Export video...", self.export, ["Ctrl+E"], "Export the finished video (Ctrl+E)")
+        self.undo_action = act("Undo change", self.undo, [QKeySequence.Undo], "Undo the last change (Ctrl+Z)")
+        self.redo_action = act("Redo change", self.redo, ["Ctrl+Y", "Ctrl+Shift+Z"], "Redo (Ctrl+Y)")
+        for a, short in ((self.new_action, "New"), (self.open_action, "Open"), (self.save_action, "Save"),
+                         (self.save_as_action, "Save as"), (self.export_action, "Export video"),
+                         (self.undo_action, "↶ Undo"), (self.redo_action, "↷ Redo")):
+            a.setIconText(short)  # the toolbar's shorter label
+        self.recent_menu = QMenu("Open recent", self)
+        self.recent_menu.aboutToShow.connect(self._fill_recent)
+
         file = self.menuBar().addMenu("&File")
-        action(file, "New project", self.new_project, ["Ctrl+N"])
-        action(file, "Open project...", self.open_project, [QKeySequence.Open])
+        file.addAction(self.new_action)
+        file.addAction(self.open_action)
+        file.addMenu(self.recent_menu)
         file.addSeparator()
-        action(file, "Save project", self.save_project, [QKeySequence.Save])
-        action(file, "Save project as...", self.save_project_as, ["Ctrl+Shift+S"])
+        file.addAction(self.save_action)
+        file.addAction(self.save_as_action)
         file.addSeparator()
-        action(file, "Export video...", self.export, ["Ctrl+E"])
+        file.addAction(self.export_action)
+        file.addAction(act("Open the exports folder", self.open_exports))
+        file.addSeparator()
+        file.addAction(act("Quit", self.close, ["Ctrl+Q"]))
         edit = self.menuBar().addMenu("&Edit")
-        self.undo_action = action(edit, "Undo change", self.undo, [QKeySequence.Undo])
-        self.redo_action = action(edit, "Redo change", self.redo, ["Ctrl+Y", "Ctrl+Shift+Z"])
+        edit.addAction(self.undo_action)
+        edit.addAction(self.redo_action)
         edit.addSeparator()
-        action(edit, "Compare before / after", lambda: self.compare_btn.isEnabled() and self.compare_btn.toggle(),
-               ["C"])
+        edit.addAction(act("Compare before / after", lambda: self.compare_btn.isEnabled() and self.compare_btn.toggle(),
+                           ["C"]))
+        edit.addAction(act("Settings...", self.open_settings))
+        help_menu = self.menuBar().addMenu("&Help")
+        help_menu.addAction(act("What can I say? (prompt guide)", self.show_prompt_help, ["F1"]))
+        help_menu.addAction(act("How to make an edit (online guide)", lambda: QDesktopServices.openUrl(
+            QUrl("https://github.com/keeya30144javan-afk/montagedirector#how-to-make-an-edit"))))
+        help_menu.addAction(act("Check for updates", self.check_for_updates_now))
+        help_menu.addSeparator()
+        help_menu.addAction(act(f"About {APP_NAME}", self.show_about))
+
+        bar = self.addToolBar("Project")
+        bar.setObjectName("ProjectBar")
+        bar.setMovable(False)
+        bar.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        for a in (self.new_action, self.open_action):
+            bar.addAction(a)
+        recent = QToolButton()
+        recent.setText("Recent ▾")
+        recent.setToolTip("Open a project you used recently")
+        recent.setMenu(self.recent_menu)
+        recent.setPopupMode(QToolButton.InstantPopup)
+        bar.addWidget(recent)
+        bar.addAction(self.save_action)
+        bar.addAction(self.save_as_action)
+        bar.addSeparator()
+        bar.addAction(self.undo_action)
+        bar.addAction(self.redo_action)
+        bar.addSeparator()
+        bar.addAction(self.export_action)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        bar.addWidget(spacer)
+        self.project_label = QLabel("Unsaved project")
+        self.project_label.setObjectName("ProjectName")
+        bar.addWidget(self.project_label)
+        self.dirty = False
+
+    # ----- project name, unsaved changes, recent projects ----------------------- #
+    def _set_dirty(self, dirty: bool):
+        self.dirty = dirty
+        name = self.project.path.stem if self.project.path else ""
+        mark = " •" if dirty and (name or self.project.plan is not None) else ""
+        self.setWindowTitle(f"{name or 'Unsaved project'}{mark} · {APP_NAME}" if (name or mark) else APP_NAME)
+        if hasattr(self, "project_label"):
+            self.project_label.setText((name or "Unsaved project") + (" (unsaved changes)" if mark else ""))
+
+    def maybe_save(self) -> bool:
+        """Ask to save unsaved changes. False means the user cancelled."""
+        if not self.dirty or self.project.plan is None:
+            return True
+        box = QMessageBox(QMessageBox.Question, APP_NAME, "Save the changes to this project first?", parent=self)
+        save = box.addButton("Save", QMessageBox.AcceptRole)
+        discard = box.addButton("Don't save", QMessageBox.DestructiveRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is save:
+            self.save_project()
+            return not self.dirty
+        return box.clickedButton() is discard
+
+    def _remember_recent(self, path: Path):
+        data = store.load()
+        recent = [p for p in data.get("recent_projects", []) if p != str(path)]
+        store.save({**data, "recent_projects": [str(path)] + recent[:9]})
+
+    def _fill_recent(self):
+        self.recent_menu.clear()
+        paths = [p for p in store.load().get("recent_projects", []) if Path(p).is_file()]
+        if not paths:
+            a = self.recent_menu.addAction("(no recent projects yet)")
+            a.setEnabled(False)
+            return
+        for p in paths:
+            a = self.recent_menu.addAction(Path(p).stem)
+            a.setToolTip(p)
+            a.triggered.connect(lambda _=False, p=p: self.open_recent(Path(p)))
+        self.recent_menu.addSeparator()
+        self.recent_menu.addAction("Clear this list").triggered.connect(
+            lambda: store.save({**store.load(), "recent_projects": []}))
+
+    def open_recent(self, path: Path):
+        if self.job is not None or not self.maybe_save():
+            return
+        self.load_project(path)
+
+    def ask_new_project(self):
+        if self.job is not None or not self.maybe_save():
+            return
+        self.new_project()
+
+    def show_about(self):
+        QMessageBox.about(self, f"About {APP_NAME}",
+                          f"<b>{APP_NAME} {__version__}</b><br><br>Make AMVs, GMVs and montages that hit the beat.<br>"
+                          "<a href='https://github.com/keeya30144javan-afk/montagedirector'>"
+                          "github.com/keeya30144javan-afk/montagedirector</a>")
+
+    def check_for_updates_now(self):
+        from ..updates import newer_release
+
+        self._manual_update_check = True
+        self._update_thread, self._update_job = start_job(
+            self, lambda cancel, progress: newer_release(), self._ignore_progress, self._on_update_result,
+            self._ignore_failure, self._ignore_cancel)
 
     def _build_sidebar(self) -> QWidget:
         side = QWidget()
@@ -638,6 +759,9 @@ class MainWindow(QMainWindow):
                     "export_preset": self.quality.currentData()})
 
     def closeEvent(self, e):
+        if not self.maybe_save():
+            e.ignore()
+            return
         if self.job is not None:
             self.stop()
         self._persist()
@@ -899,6 +1023,7 @@ class MainWindow(QMainWindow):
         self.timeline_bar.setRange(0, int(round((full - (b - a)) * 100)))
         self.timeline_bar.setPageStep(max(1, int((b - a) * 100)))
         self.timeline_bar.setValue(int(round((a - tl.full_a) * 100)))
+        self.timeline_bar.setEnabled(tl.zoomed())
         self.timeline_bar.blockSignals(False)
 
     def _timeline_scrolled(self, value: int):
@@ -1081,8 +1206,8 @@ class MainWindow(QMainWindow):
         self.compare_btn.setText("Before / After")
         self.compare_btn.blockSignals(False)
         self.load_preview(proj.preview_path)
-        name = proj.path.stem if proj.path else ""
-        self.setWindowTitle(f"{name} · {APP_NAME}" if name else APP_NAME)
+        self._set_dirty(not getattr(self, "_just_opened", False))
+        self._just_opened = False
 
     def add_idea(self, text: str):
         cur = self.prompt.toPlainText().strip()
@@ -1157,7 +1282,7 @@ class MainWindow(QMainWindow):
         self.footage_info.setText("")
         self.song_info.setText("")
         self.video_stack.setCurrentWidget(self.placeholder)
-        self.setWindowTitle(APP_NAME)
+        self._set_dirty(False)
         self.status.setText("New project.")
         self._set_busy(False)
 
@@ -1189,11 +1314,12 @@ class MainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, APP_NAME, f"Couldn't save the project: {exc}")
             return
-        self.setWindowTitle(f"{saved.stem} · {APP_NAME}")
+        self._remember_recent(saved)
+        self._set_dirty(False)
         self.status.setText(f"Saved {saved.name}")
 
     def open_project(self):
-        if self.job is not None:
+        if self.job is not None or not self.maybe_save():
             return
         path, _ = QFileDialog.getOpenFileName(self, "Open project", str(self._projects_dir()),
                                               "Montage Director project (*.mdproj)")
@@ -1221,7 +1347,9 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(i)
         self.start_edit.setText(_mmss(s.song_start) if s.song_start else "")
         self.end_edit.setText(_mmss(s.song_end) if s.song_end else "")
-        self.setWindowTitle(f"{path.stem} · {APP_NAME}")
+        self._remember_recent(path)
+        self._just_opened = True
+        self._set_dirty(False)
         if proj.direction is None:
             self.status.setText(f"Opened {path.name}. Press Make Edit when you're ready.")
             return
@@ -1255,10 +1383,13 @@ class MainWindow(QMainWindow):
         pass
 
     def _on_update_result(self, result):
+        manual, self._manual_update_check = getattr(self, "_manual_update_check", False), False
         if not result:
+            if manual:
+                QMessageBox.information(self, APP_NAME, f"You have the latest version ({__version__}).")
             return
         version, url = result
-        if store.load().get("skipped_version") == version:
+        if store.load().get("skipped_version") == version and not manual:
             return
         box = QMessageBox(QMessageBox.Information, APP_NAME,
                           f"Montage Director {version} is available (you have {__version__}).\n\n"
