@@ -433,6 +433,12 @@ class _Planner:
                 continue
             last_start = sd.start
             kept.append(sd)
+        # Parts of the prompt that only say what to show become layers over the timing.
+        for sd in kept:
+            if sd.keep_cuts:
+                self.overlays.append(sd)
+                self.timeline_notes.append(f"{_mmss(sd.start)}–{_mmss(min(sd.end, self.E))}: {sd.what or sd.note}")
+        kept = [sd for sd in kept if not sd.keep_cuts]
         # Moments tied to a place in the music ("freeze every time the music stops").
         from .direction import Moment
 

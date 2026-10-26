@@ -193,3 +193,12 @@ def test_the_gundam_prompt():
     assert d.notes[0] == "action shots", "describing the song (chill hip hop) doesn't change the pace"
     assert "a little slower" in d.notes[1], "drawn out fight scenes: a touch longer"
     assert [(s.start, s.end, s.hold) for s in d.sections] == [(0.0, 17.0, True)]
+
+
+def test_until_after_a_comma_belongs_to_the_held_shot():
+    d = read("at the beginning id like a scene where it focuses on the gundam wing, with the feather wings, until about "
+             "00:17 when the beat drops")
+    assert d.drops == [17.0]
+    assert [(s.start, s.end, s.hold) for s in d.sections] == [(0.0, 17.0, True)]
+    d = read("at the beginning hold one shot until 0:17 when the beat drops. from 0:00 to 0:17 show the feather wings")
+    assert [(s.hold, s.keep_cuts) for s in d.sections] == [(True, False), (False, True)], "what to show is a layer"

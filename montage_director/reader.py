@@ -210,7 +210,7 @@ outro verse chorus drop drops bridge build section sections second seconds minut
 character characters people person guy guys scene scenes shot shots clip clips footage video edit edits cut cuts
 moment moments possible get getting look looks looking happen happens happening put putting use using try
 final screen bunch frame frames image picture whole entire every each other way long short too much fast slow
-focus focused focusing one two three single just only beat beats bass include includes including packed
+focus focused focuses focusing one two three single just only beat beats bass include includes including packed
 shows showing drawn real vibe vibes juxtaposition contrast subject matter liter literal literally kinda pretty fun
 crazy insane wild chill hype hyped intense calm epic hard harder go goes going here there this that
 quick quicker slower faster cool sick nice good great best better bad kind sort feel""".split())
@@ -285,6 +285,11 @@ def _split(text: str) -> list[str]:
         # belongs to the moment just described
         asks = re.match(r"(?:and )?(?:i want|i wanna|we can|we could|let's|lets|give me|show|have|put|use|make|"
                         r"there should|it should|i need)\b", p)
+        # ", until about 0:17 when the beat drops" ends the instruction before it
+        if merged and re.match(r"(?:and |then )?(?:until|till|til|up to|up until|all the way to|through|thru|right up to)\b", p) \
+                and _only_scope(p):
+            merged[-1] = merged[-1] + " " + p
+            continue
         if merged and not TIME_RE.search(p) and not _has_scope(p) and (
                 _only_scope(merged[-1]) or (asks and (TIME_RE.search(merged[-1]) or _cue_only(merged[-1])))):
             merged[-1] = merged[-1] + " " + p
@@ -339,7 +344,9 @@ def _intent_words(text: str) -> bool:
                 or any(re.search(p, text) for p, _ in TRANSITION_WORDS)
                 or any(rx.search(text) for rx, _ in EFFECT_RX) or any(rx.search(text) for rx, _, _ in CONTENT_RX)
                 or re.search(r"\bfreeze|\bfade|\bsync|\bon the (?:snare|kick|beat|hits?)|\bcut (?:on|with|to)\b|coincid|"
-                             r"line up|match the|with (?:the|those) (?:hits|drums)|with those|on (?:each|every) (?:hit|drum)",
+                             r"line up|match the|with (?:the|those) (?:hits|drums)|with those|on (?:each|every) (?:hit|drum)|"
+                             r"\b(?:show|shows|showing|use|using|put|feature|featuring)\s+(?:the |a |an |some |his |her |their )?"
+                             r"[a-z]{3,}",
                              text))
 
 
@@ -1190,6 +1197,13 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
             d.moments.append(Moment(time=times[0], action="freeze", duration=1.0))
     sd.effects = fx
     sd.drum_fx = dict(ins.drum_fx)
+    if not window and not (pace is not None or ins.hold or ins.sync or ins.cut_rate is not None or ins.ramp
+                           or ins.velocity or ins.moments):
+        # only says what to show / which effects ("feather wings", "flashes"): a layer on top, so it never
+        # cuts short a held shot or another part's pacing
+        sd.keep_cuts = True
+        sd.prefer = dict(ins.prefer)
+        sd.energy = None
     d.sections.append(sd)
 
     what = ("hold one still shot" if sd.hold and sd.still else "hold one shot" if sd.hold else
