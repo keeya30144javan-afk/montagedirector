@@ -249,6 +249,8 @@ class _Planner:
         if tag:
             if "crowd" in pref and tag.get("people") is not None:  # "as many characters as possible"
                 score += pref["crowd"] * (min(int(tag["people"]), 6) / 1.5 - 0.6)
+            if "solo" in pref and tag.get("people") is not None:   # "focus on one gundam"
+                score += pref["solo"] * {0: -0.5, 1: 1.5, 2: 0.3}.get(int(tag["people"]), -0.8)
             words = pref.get("_query")
             if words:  # names and things in the AI's shot descriptions
                 desc = (tag.get("desc", "") + " " + tag.get("kind", "")).lower()

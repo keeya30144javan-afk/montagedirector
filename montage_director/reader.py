@@ -209,6 +209,7 @@ outro verse chorus drop drops bridge build section sections second seconds minut
 character characters people person guy guys scene scenes shot shots clip clips footage video edit edits cut cuts
 moment moments possible get getting look looks looking happen happens happening put putting use using try
 final screen bunch frame frames image picture whole entire every each other way long short too much fast slow
+focus focused focusing one two three single just only beat beats bass
 quick quicker slower faster cool sick nice good great best better bad kind sort feel""".split())
 FILLER = re.compile(r"\b(i want|i'd like|i would like|i need|please|make it|make the|make this|the edit|this edit|edit|it|"
                     r"should|would|be|have|has|to|of|the|a|an|and|with|for|in|on|is|are|that|this|my|me|i|you|"
@@ -377,6 +378,7 @@ class Instruction:
     people: bool = False            # asked for particular characters / a group: the free director can't see who
     on_taps: bool = False           # "for every marker / tap / cut I made": keep the cuts, change the shots
     transition: str | None = None   # crossfade | dissolve | whip | zoom | white | black | circle | wipe
+    drop_at: float | None = None    # "till 0:17 when the beat drops": the drop is where this ends
     understood: bool = False
 
 
@@ -473,6 +475,9 @@ def read_instruction(text: str) -> Instruction:
                 ins.cue = kind
                 take(m)
                 break
+    if ins.cue == "drop" and len(ins.times) == 2:
+        # "from the start till 0:17 when the beat drops": the drop marks the END of this instruction
+        ins.drop_at, ins.cue = ins.times[1], None
     if ins.cue and ins.occurrence is None and re.search(
             r"\b(?:each|every|all(?: the)?|both)\s+(?:\w+\s+)?(?:drops?|chorus(?:es)?|verses?|solos?|fills?|stops?|build ?ups?)\b",
             text) or re.search(r"\b(?:every time|whenever|each time|any time)\b", text):
@@ -637,6 +642,12 @@ def read_instruction(text: str) -> Instruction:
         ins.prefer["crowd"] = 1.0
         ins.prefer_names.append("as many characters as possible")
         take(m)
+    m = re.search(r"\b(?:focus(?:es|ed|ing)? on (?:just )?(?:one|a single|1)|just one|only one|a single|one single|"
+                  r"solo (?:shot|scene)|on (?:its|his|her|their) own|by (?:itself|himself|herself)|alone)\b", work)
+    if m:
+        ins.prefer["solo"] = 1.0
+        ins.prefer_names.append("one subject in focus")
+        take(m)
     if not ins.hold and not ins.on_taps and re.search(
             r"\b(?:a|one|single) (?:shot|scene|still|picture|frame)(?: or (?:a |one )?(?:shot|scene|still))? "
             r"(?:with|of|where|that|showing)\b", text):
@@ -653,7 +664,8 @@ def read_instruction(text: str) -> Instruction:
     query = ins.prefer.pop("_query", None)
     if query and re.search(r"\b(?:show|shows|showing|use|using|put|have|with|featuring|feature|of|starring|where)\b", text):
         ins.prefer["_query"] = query  # "show nappa in the chorus": looked up in the shot descriptions
-    ins.understood = bool(ins.on_taps or ins.transition or "crowd" in ins.prefer or ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold
+    ins.understood = bool(ins.on_taps or ins.transition or "crowd" in ins.prefer or "solo" in ins.prefer
+                          or ins.drop_at is not None or ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold
                           or ins.sync or ins.drum_fx or ins.prefer or ins.ramp or ins.velocity or ins.moments
                           or ins.camera)
     # Where it applies
@@ -1102,6 +1114,9 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
         d.sections.append(sd)
         notes.append(f"⏱ {_where(ins, None)}: " + ", ".join(MOMENT_WORD.get(a, a) for a in ins.moments))
         return
+    if ins.drop_at is not None:
+        d.drops = sorted(set((d.drops or []) + [ins.drop_at]))
+        notes.append(f"⏱ drop at {_mmss(ins.drop_at)}")
     if not ins.understood:
         return
     sd = SectionDirection(start=times[0] if times else -1.0, end=times[1] if len(times) > 1 else -1.0,

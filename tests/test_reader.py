@@ -172,3 +172,12 @@ def test_a_still_for_the_final_shot():
     sd, _ = region_direction("id like a shot or scene with as many characters as possible for the last part of the song",
                              280.0, 290.0)
     assert sd.hold and sd.prefer == {"crowd": 1.0}
+
+
+def test_hold_until_the_drop_on_one_subject():
+    d = read("at the beginning till about 00:17 when the beat drops id like to use one scene or shot where you focus "
+             "on one gundam")
+    assert d.drops == [17.0]
+    assert [(s.start, s.end, s.cue, s.hold) for s in d.sections] == [(0.0, 17.0, None, True)]
+    assert d.sections[0].prefer == {"solo": 1.0, "_query": ["gundam"]}
+    assert not d.unclear
