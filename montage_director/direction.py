@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from .plan import Look
 
 SECTION_LABELS = ("intro", "verse", "build", "drop", "breakdown", "outro")
-EFFECTS = ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert", "stutter")
+EFFECTS = ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert", "stutter", "flicker")
 CUT_CHOICES = (0.5, 1.0, 2.0, 4.0, 8.0)  # beats per cut
 MOMENT_ACTIONS = ("flash", "freeze", "zoom", "shake", "rgb", "invert", "slowmo",
                   "reverse", "fade_white", "fade_black", "fade_in", "cut")

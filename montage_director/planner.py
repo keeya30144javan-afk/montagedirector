@@ -1168,6 +1168,7 @@ class _Planner:
 
         self.apply_drum_fx(cuts)
         self.apply_asked_effects(cuts)
+        self.apply_flicker(cuts)
 
         # Section entrances.
         for sec in self.song.sections:
@@ -1206,6 +1207,18 @@ class _Planner:
         if not st.pure:
             last = cuts[-1]
             self.add(cuts, max(last.f0, self.total - self.fps), "fade_black", self.fps, 1.0, "black")
+
+    def apply_flicker(self, cuts: list[Cut]) -> None:
+        """Black flicker ("dark music video", "flicker in the intro"): the picture blinks to black for a frame
+        or three about five times a second, like a failing light. The amount sets how often."""
+        if self.d.style.pure:
+            return
+        period = max(4, int(round(0.2 * self.fps)))
+        for c in cuts:
+            for f in range(c.f0 + period // 2, c.f1 - 1, period):
+                amount = self.effect_at(self.song_t(f), "flicker")
+                if amount > 0 and self.rng.random() < amount * 0.9:
+                    self.add(cuts, f, "blackout", self.rng.choice((1, 2, 2, 3)))
 
     def apply_asked_effects(self, cuts: list[Cut]) -> None:
         """Effects asked for in a part of the song ("more flashes", "zoom", "shake" there) really show up:
@@ -1311,6 +1324,10 @@ class _Planner:
             kind = "white" if i in dips else self.transition_at(self.song_t(c.f0))
             if not kind or kind == "mix":
                 kind = None if not kind else "crossfade"
+            if kind == "blackcut":  # a hard cut that snaps through a frame or two of black
+                if prev.shot != c.shot and c.frames >= 4:
+                    self.add(cuts, c.f0, "blackout", 1 if self.fps <= 24 or c.frames < 8 else 2, asked=True)
+                continue
             if not kind or prev.reverse or prev.shot == c.shot:
                 continue
             secs = {"crossfade": 0.4, "dissolve": 0.4, "quick": 0.1}.get(kind, 0.27)

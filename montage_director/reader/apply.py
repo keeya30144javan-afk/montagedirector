@@ -52,14 +52,14 @@ def _apply_amount(fx: dict, eff: str, amount: str) -> None:
 
 EFFECT_LABEL = {"flash": "flashes", "zoom": "zoom punches", "shake": "shake", "rgb": "glitch / RGB split",
                 "slowmo": "slow motion", "reverse": "reversed clips", "invert": "negative strobes",
-                "stutter": "stutter cuts"}
+                "stutter": "stutter cuts", "flicker": "black flickers"}
 AMOUNT_WORD = {"none": "no", "less": "fewer", "light": "a few", "more": "more", "add": ""}
 DRUM_WORD = {"snare": "snare", "kick": "kick", "hits": "drum hit", "big": "big hit", "bar": "bar", "beat": "beat"}
 
 
 TRANSITION_NAMES = {"crossfade": "crossfades", "dissolve": "dissolves", "whip": "whip pans", "zoom": "zoom-throughs",
                     "white": "dips to white", "black": "dips to black", "circle": "circle wipes", "wipe": "wipes",
-                    "pixel": "pixel glitches", "quick": "quick blends"}
+                    "pixel": "pixel glitches", "quick": "quick blends", "blackcut": "cuts through black"}
 MOMENT_WORD = {"fade_black": "fade to black", "fade_white": "fade to white", "freeze": "freeze frame",
                "fade_in": "fade in from black"}
 
@@ -251,6 +251,16 @@ def _apply_hint(d: Direction, hint: str) -> None:
         st.flash_top = max(st.flash_top, 0.1)
         d.look.glow = max(d.look.glow, 0.4)
         d.look.trails = max(d.look.trails, 0.25)
+    elif hint == "dark_mv":  # a dark rap/horror music video: hard cuts that snap through black, flickering light
+        d.look.grade, d.look.letterbox, d.look.glow, d.look.trails = "dark", True, 0.0, 0.0
+        d.transitions.clear()
+        d.transitions["all"] = "blackcut"
+        st.white_into_drop = st.blur_into_sections = False
+        st.flash_top *= 0.3
+        st.transitions = {}
+        for lab in every:
+            st.effects[lab]["flicker"] = 0.8 if lab == "intro" else 0.35
+            st.effects[lab]["flash"] *= 0.3
     elif hint == "trailer":
         d.look.letterbox = True
         st.freeze_before_drop = True

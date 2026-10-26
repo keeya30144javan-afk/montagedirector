@@ -24,6 +24,9 @@ The app checks for updates when it starts and offers to download new versions. Y
    - **Clean Beat Sync:** a cut on every beat and nothing else.
 
    Your idea always wins: "hard cuts", "no stutters", "no slow motion" or "dissolves in the chorus" change the style's moves.
+
+   **Mix and match moves with any style.** Every move above can be asked for by name, in any style and any part of the song: "quick blends", "dissolves", "dips to black", "pixel transitions", "stutters on the drop", "white flashes", "zoom punches", "shake on the big hits". Some looks that aren't a style of their own:
+   - **Dark music video** (think Hellsing over a rap track): say "dark music video" or "horror vibe". You get a dark red grade, hard cuts that snap through black, a black flicker that's heaviest in the intro, and letterbox bars. Or pick the pieces: "cut through black", "heavy flicker in the intro", "dark red grade".
 4. **Your idea:** describe the edit, for example *"Slow emotional intro on the quiet scenes, then go crazy on the drop with the fight scenes and lots of flashes. Freeze frame at 1:05. Vertical for TikTok."*
 5. **Director:**
    - **Free (on this PC):** no account needed. Reads your idea the way an editor would: pace ("a little faster", "not too fast", "back to the flow", "every 2 beats"), effects with amounts ("a few flashes", "less shake", "no glitch"), the drums ("cut on the kick", "flash on every snare", "slow motion on the big hits"), what to show ("fight scenes", "explosions", "close-ups", "dark scenes", "blue shots"), and where ("the chorus", "the second drop", "from 0:30 to 0:45", "the last 20 seconds", "halfway through", "when the solo starts", "before each drop"). Press **Ideas** for examples and **What can I say?** for the full list. Anything it doesn't understand is shown as *Didn't catch* so you can rephrase it.

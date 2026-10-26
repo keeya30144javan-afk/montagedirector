@@ -202,6 +202,14 @@ CASES += [
     ("at 2:10 let the whole fight play, no cuts", ["2:10", "play out", "action"]),
     ("from 0:30 to 0:45 one uncut fight scene", ["0:30", "play out", "action"]),
     ("hold one shot of the sunset at the end", ["hold one shot"]),
+    ("dark music video, heavy flicker in the intro", ["dark music video", "intro: more black flickers"]),
+    ("cut through black between shots", ["cuts through black"]),
+    ("a little flicker in the drop", ["drop: a few black flickers"]),
+    ("no flicker", ["no black flickers"]),
+    ("dark red grade and black strobes on the chorus", ["dark red grade", "drop: black flickers"]),
+    ("gritty horror vibe", ["dark music video"]),
+    ("stutters on the drop", ["drop: stutter cuts"]),
+    ("quick blends between the shots", ["quick blends"]),
 ]
 
 # Longer, rambling prompts with several instructions, the way people really write them.

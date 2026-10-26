@@ -248,6 +248,9 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
         "vhs": "eq=saturation=1.25:contrast=1.05,chromashift=cbh=3:crh=-3,gblur=sigma=0.6",
         "mono": "hue=s=0,eq=contrast=1.15",
         "dream": "eq=saturation=1.15:brightness=0.03,colorbalance=rh=0.05:bh=0.06",
+        # dark music video: crushed blacks, everything but the reds pulled down, a heavy vignette
+        "dark": "eq=contrast=1.25:brightness=-0.06:saturation=0.8:gamma=0.9,"
+                "colorbalance=rs=0.12:rm=0.08:gs=-0.04:bs=-0.02:bh=-0.05,vignette=PI/4",
     }.get(look.grade)
     if grade:
         chain.append(grade)
@@ -269,6 +272,8 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
                          f"enable='eq(n,{e.frame + k})'")
     for e in by_kind.get("fade_black", []):
         chain.append(f"fade=t=out:s={e.frame}:n={max(1, e.frames)}:color=black")
+    for e in by_kind.get("blackout", []):  # cuts through black, black flicker
+        chain.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(n,{e.frame},{e.frame + e.frames - 1})'")
     for e in by_kind.get("white_up", []):  # the picture floods to white (into a drop)
         chain.append(f"fade=t=out:s={e.frame}:n={max(1, e.frames)}:color=white")
     for e in by_kind.get("fade_in", []):

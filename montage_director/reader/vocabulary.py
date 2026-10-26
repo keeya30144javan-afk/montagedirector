@@ -54,6 +54,8 @@ EFFECT_WORDS = [  # (pattern, effect)
     (r"glitch(?:es|y|ing)?|rgb(?: split)?|chromatic(?: aberration)?|datamosh(?:ing)?", "rgb"),
     (r"slow motion", "slowmo"),
     (r"revers(?:e|ed|ing)|rewind(?:s|ing)?|backwards", "reverse"),
+    (r"(?:black )?flicker(?:s|ing|y)?|black strobes?|strob(?:e|es|ing) (?:to|through) black|blackout flickers?|"
+     r"blink(?:s|ing)? to black", "flicker"),
     (r"invert(?:ed|s)?|negative(?: flash(?:es)?)?|strobe(?:s|ing)?", "invert"),
     (r"stutter(?:s|ing)?(?: cuts?)?|repeat(?:ed|ing)? frames|skipping tape|tape skips?", "stutter"),
 ]
@@ -93,14 +95,16 @@ RAMP = (r"faster and faster|quicker and quicker|more and more cuts|speed(?:s|ing
         r"getting (?:faster|quicker)|ramp(?:s|ing)? up|cuts? speed(?:s|ing)? up|build(?:s|ing)? up (?:the )?(?:speed|pace|cuts)")
 VELOCITY = r"velocity|speed ramps?|speed-ramp(?:s|ing)?|speed changes|time ?remap"
 TRANSITION_WORDS = [  # (pattern, kind), most specific first
-    (r"\b(?:cross ?fades?|cross-fades?|crossfading|cross[- ]dissolves?|fades? between|blend(?:s|ing)? (?:between|into)|"
-     r"fade (?:from one|between) (?:shot|scene|clip)s?)\b", "crossfade"),
     (r"\b(?:quick|short|fast|little|tiny) (?:fades?|blends?|crossfades?|dissolves?)\b|\bsoft cuts\b|\bghost(?:y|ing)? "
      r"(?:cuts|blends)\b", "quick"),
+    (r"\b(?:cross ?fades?|cross-fades?|crossfading|cross[- ]dissolves?|fades? between|blend(?:s|ing)? (?:between|into)|"
+     r"fade (?:from one|between) (?:shot|scene|clip)s?)\b", "crossfade"),
     (r"\bdissolves?\b", "dissolve"),
     (r"\bwhip(?:s| pans?| transitions?)?\b|\bswipes?\b|\bslide transitions?\b", "whip"),
     (r"\bzoom(?:-| )?(?:transitions?|through|thru)\b|\bzoom between\b", "zoom"),
     (r"\b(?:dips? to white|white dips?|fade through white|white transitions?|flash transitions?)\b", "white"),
+    (r"\bcut(?:s|ting)? (?:through|thru|via) black\b|\bblack (?:frames?|gaps?) between\b|\bblackout cuts?\b|"
+     r"\bblack cuts\b|\bsnap(?:s|ping)? (?:to|through) black\b|\bblack between (?:the )?(?:cuts|shots|scenes)\b", "blackcut"),
     (r"\b(?:dips? to black|black dips?|fade through black|black transitions?)\b", "black"),
     (r"\bcircle (?:wipes?|transitions?|opens?)\b", "circle"),
     (r"\b(?:pixel(?:ate|ated|ize|ized)?|glitch|glitchy) transitions?\b|\bpixelat(?:e|ed|ion)\b", "pixel"),
@@ -209,6 +213,9 @@ GLOBAL_HINTS = [
      "anime opening feel: punchy cuts on the drum fills, a freeze before the drop"),
     (r"\bunder control\b|\bdon't overdo it\b|\bnot too much\b|\btasteful\b|\bnot over the top\b", "simple",
      "toned down: lighter effects"),
+    (r"\b(?:dark|menacing|sinister|evil|horror|grim|villain(?:ous)?)\b[\w\s,]{0,20}\b(?:music video|mv|rap video|"
+     r"edit|amv|vibe)\b|\bhellsing\b|\bberserk\b", "dark_mv",
+     "dark music video: dark red grade, cuts through black, black flicker (heaviest in the intro), letterbox"),
     (r"\bphonk\b", "phonk", "phonk edit: heavy shake and zooms on the bass, cuts on the kick in the drop"),
     (r"\bamvs?\b|\bgmvs?\b|\b20(?:0\d|1[0-3])\b|\bold (?:school )?(?:youtube|amv|edit)s?\b|\bnostalgi\w+\b|\bclassic edit\b",
      "amv", "2000s AMV feel: glow, ghost trails, white flashes into the drop"),
@@ -227,4 +234,7 @@ LOOKS = [
     (r"\bteal\b|\borange and teal\b|\bmovie\b|\bfilm(?:ic)?\b|\bcinematic\b|\btrailer\b", "cinematic", "film grade"),
     (r"\bsad\b|\bmelanchol\w*\b|\bdepressing\b|\brain(?:y)?\b|\bgloomy\b", "sad", "sad grade"),
     (r"\bdream(?:y)?\b|\bethereal\b|\bheavenly\b", "dream", "dreamy grade"),
+    (r"\b(?:dark|blood(?:y)?|deep)[- ]red (?:look|grade|tint|colou?rs?|tones?)\b|\bred (?:tint|grade|look)\b|\bhorror\b|"
+     r"\bgritty\b|\bdark (?:look|grade|colou?rs?|tones?|aesthetic|colou?r grade)\b|\bcrushed blacks\b|\bmoody grade\b",
+     "dark", "dark red grade"),
 ]
