@@ -170,6 +170,8 @@ CONTENT = [  # (pattern, preferences, what to call it)
     (r"auras?|power(?:ing)? ?ups?|powers up|transform(?:ation|ations|ing|s)?|super saiyan|charging|glowing", {"bright": 1.0, "sat": 0.6},
      "glowing power-up shots"),
     (r"lightning|electric(?:ity)?|thunder", {"bright": 0.8, "hue": 220.0}, "electric blue shots"),
+    (r"yell(?:s|ing)?|scream(?:s|ing)?|shout(?:s|ing)?|roar(?:s|ing)?|rage|raging|angry|furious|battle cry",
+     {"bright": 0.5, "sat": 0.6}, "intense shots (yelling, rage)"),
     (r"close[- ]?ups?|faces?|face shots|talking|dialogue|conversations?|staring|eyes|looking|reaction shots?",
      {"motion": -1.0}, "close-ups and faces"),
     (r"quiet scenes|calm scenes|emotional scenes|sad scenes|crying|tears|scenery|landscapes?|establishing shots|"
@@ -349,6 +351,7 @@ class Instruction:
     moments: list[str] = field(default_factory=list)        # freeze | flash | fade_black | ...
     frantic: bool = False           # asked for the quickest cutting (half beats)
     people: bool = False            # asked for particular characters / a group: the free director can't see who
+    on_taps: bool = False           # "for every marker / tap / cut I made": keep the cuts, change the shots
     understood: bool = False
 
 
@@ -590,11 +593,13 @@ def read_instruction(text: str) -> Instruction:
             ins.pace = None
     if normal and ins.pace is None:
         ins.pace = 0.0
+    ins.on_taps = bool(re.search(r"\b(?:every|each|all|my|the|those|these)\s+(?:of my\s+)?(?:manual\s+|tapped\s+)?"
+                                 r"(?:markers?|marks?|taps?|cuts?(?= i (?:made|tapped|put|did))|tapped cuts?)\b", text))
     ins.people = bool(re.search(r"\b(?:characters?|everyone|everybody|the (?:whole )?(?:crew|team|squad|gang|cast|group)|"
                                 r"group shot|together|all of them|both of them|him|her|them)\b", text))
     ins.frantic = bool(re.search(r"frantic|rapid|flurry|barrage|crazy|insane|nonstop", work))
 
-    ins.understood = bool(ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold
+    ins.understood = bool(ins.on_taps or ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold
                           or ins.sync or ins.drum_fx or ins.prefer or ins.ramp or ins.velocity or ins.moments
                           or ins.camera)
     # Where it applies
@@ -1053,6 +1058,8 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
     extras += [f"{EFFECT_LABEL.get(e, e)} on every {DRUM_WORD.get(k, k)}" for e, k in ins.drum_fx.items()]
     if sd.velocity:
         extras.append("velocity edit")
+    if what == "action" and "action shots" in extras:
+        what = ""
     sd.what = ", ".join(x for x in [what] + extras if x)
     notes.append(f"⏱ {_where(ins, window)}: {sd.what}")
 
@@ -1116,6 +1123,16 @@ def region_direction(text: str, start: float, end: float) -> tuple[SectionDirect
     sd = probe.sections[0]
     sd.moments = moments
     sd.note = text.strip()
+    # Only says what to show (or which effects): keep the cuts that are there, including your taps.
+    sd.keep_cuts = not (ins.pace is not None or ins.cut_rate is not None or ins.hold or ins.sync or ins.ramp
+                        or ins.velocity or sd.only_moments)
+    if sd.keep_cuts:
+        sd.cut_every, sd.energy = None, None
+        sd.prefer = dict(ins.prefer)  # including motion ("fight scenes"), which picks the shots here
+        if ins.camera:
+            sd.prefer["camera_" + ins.camera] = 1.0
+        if ins.on_taps:
+            sd.what = (sd.what + " " if sd.what else "") + "on your cuts here"
     if ins.people and sd.hold:
         sd.what = (sd.what or "hold one shot") + " (tip: use Pick shot… to choose exactly who is on screen)"
     if moments and sd.what:

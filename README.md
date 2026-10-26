@@ -24,8 +24,9 @@ The app checks for updates when it starts and offers to download new versions. Y
 7. Fine-tune it:
    - **Refine** the whole edit in your own words ("more flashes in the drop", "cut every 2 beats").
    - **Refine one part:** drag across the timeline to select it, type what should happen there ("quicker cuts with punches", "hold one shot", "cut on the hits"), press Refine. Right-click a green section box to undo it.
-   - **Pick shot…:** select part of the timeline and press **Pick shot…** to choose exactly which shot plays there from thumbnails, for example a group shot for the last ringing note. Tick *Freeze on this frame* to show it as a still.
-   - **Tap to Direct:** press it and tap along with the music: Space = cut, F = flash, Z = zoom, X = shake, D = drop, Backspace = undo. Taps snap to the nearest drum hit. Press **Done tapping** and the edit is rebuilt around your taps.
+   - **Pick shot…:** select part of the timeline and press **Pick shot…** to choose exactly which shot plays there from thumbnails, for example a group shot for the last ringing note. Tick *Freeze on this frame* to show it as a still. Ctrl+click several shots to play them in order on the cuts already in that part (your taps stay where they are).
+   - **Zoom the timeline:** mouse wheel over the timeline zooms in and out, Shift + wheel scrolls, or use the − / + / Fit buttons. Zoomed in, the beat grid is drawn so you can place things exactly.
+   - **Tap to Direct:** press it and tap along with the music: Space = cut, F = flash, Z = zoom, X = shake, D = drop, Backspace = undo. Taps snap to the nearest drum hit. Press **Done tapping** and the edit is rebuilt around your taps. To take out one tap later, right-click it on the timeline and choose **Remove this tap** (or select a stretch and remove all the taps in it).
    - **Fix a drop:** right-click the timeline where it really hits and choose **Mark the drop here**.
    - **New variation** keeps the plan but picks different shots.
    - **Undo / Redo** (↶ ↷, or Ctrl+Z / Ctrl+Y) steps back through every change you made.

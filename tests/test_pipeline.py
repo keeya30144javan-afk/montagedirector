@@ -422,3 +422,31 @@ def test_pick_a_shot_for_the_final_note(analysed):
     last = [c for c in plan.cuts if c.f0 / plan.fps >= 14.0]
     assert len(last) == 1 and last[0].shot == shot and last[0].freeze
     assert abs(last[0].f0 / plan.fps - 14.07) <= 1 / plan.fps + 1e-6, "the part starts exactly where it was selected"
+
+
+def test_shots_for_my_taps_in_a_selected_part(band_song, media):
+    from montage_director.project import Project, Settings
+
+    song, footage = analyze_song(band_song), analyze_footage([media])
+    proj = Project(settings=Settings(style="hype", seed=13))
+    proj.song, proj.footage = song, footage
+    proj.direct()
+    proj.taps = [(56.07, "cut"), (56.55, "cut"), (56.8, "cut"), (57.04, "cut"), (57.56, "cut")]
+    proj.apply_taps()
+    # "I like these 4 but not the one in the middle"
+    assert proj.remove_taps([56.8]) == 1 and len(proj.taps) == 4
+    tapped = proj.make_plan()
+    fps = tapped.fps
+    starts = lambda p: [c.f0 for c in p.cuts]
+    notes = proj.refine_region("put a scene where a character is powering up/yelling for every manual marker/cut "
+                               "in this highlighted section", 55.5, 58.5)
+    assert notes and proj.direction.regions[-1].keep_cuts
+    plan = proj.make_plan()
+    assert starts(plan) == starts(tapped), "changing what's shown must keep every cut where it was"
+    # several shots picked by hand: used in order on those cuts
+    picks = [s.id for s in footage.usable_shots()[:3]]
+    proj.pick_region_shot(55.9, 58.0, picks)
+    plan = proj.make_plan()
+    assert starts(plan) == starts(tapped)
+    inside = [c.shot for c in plan.cuts if 55.9 <= c.f0 / fps < 58.0]
+    assert inside[:3] == picks, inside

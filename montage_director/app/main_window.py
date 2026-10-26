@@ -14,7 +14,8 @@ from PySide6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence, QPixma
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                                QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider,
+                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QScrollBar, QSizePolicy,
+                               QSlider,
                                QStackedLayout, QVBoxLayout, QWidget)
 
 from .. import __version__
@@ -150,7 +151,7 @@ understands any wording."""
 
 
 class ShotPicker(QDialog):
-    """Choose one shot from the footage, by thumbnail."""
+    """Choose shots from the footage, by thumbnail: one to hold, or several for the cuts in that part."""
 
     def __init__(self, parent, footage, seconds: float):
         super().__init__(parent)
@@ -160,7 +161,8 @@ class ShotPicker(QDialog):
         self.footage = footage
         v = QVBoxLayout(self)
         top = QHBoxLayout()
-        top.addWidget(QLabel(f"Choose the shot for this {seconds:.1f} s part. Double-click to use it."))
+        top.addWidget(QLabel(f"Click one shot to hold it for this {seconds:.1f} s part, or Ctrl+click several "
+                             "to use them in that order on the cuts here."))
         top.addStretch()
         top.addWidget(QLabel("Show:"))
         self.order = QComboBox()
@@ -177,13 +179,20 @@ class ShotPicker(QDialog):
         self.grid.setResizeMode(QListView.Adjust)
         self.grid.setMovement(QListView.Static)
         self.grid.setUniformItemSizes(True)
+        self.grid.setSelectionMode(QListWidget.ExtendedSelection)
         self.grid.itemDoubleClicked.connect(lambda _: self.accept())
+        self.picked: list[int] = []  # in the order they were clicked
+        self.grid.itemSelectionChanged.connect(self._selection_changed)
         v.addWidget(self.grid, 1)
+        self.count = QLabel("")
+        self.count.setObjectName("Muted")
+        v.addWidget(self.count)
         self.freeze = QCheckBox("Freeze on this frame (a still picture instead of the moving clip)")
         self.freeze.setChecked(seconds > 4.0)
         v.addWidget(self.freeze)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Ok).setText("Use this shot")
+        self.ok = buttons.button(QDialogButtonBox.Ok)
+        self.ok.setText("Use this shot")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         v.addWidget(buttons)
@@ -209,11 +218,22 @@ class ShotPicker(QDialog):
             item.setData(Qt.UserRole, s.id)
             self.grid.addItem(item)
 
+    def _selection_changed(self):
+        now = [int(i.data(Qt.UserRole)) for i in self.grid.selectedItems()]
+        self.picked = [i for i in self.picked if i in now] + [i for i in now if i not in self.picked]
+        many = len(self.picked) > 1
+        self.freeze.setEnabled(not many)
+        self.ok.setText(f"Use these {len(self.picked)} shots" if many else "Use this shot")
+        self.count.setText(f"{len(self.picked)} shots picked: they play in the order you clicked them, one per cut "
+                           "(your taps stay where they are)." if many else "")
+
     def accept(self):
-        item = self.grid.currentItem()
-        if item is None:
-            return
-        self.chosen = int(item.data(Qt.UserRole))
+        if not self.picked:
+            item = self.grid.currentItem()
+            if item is None:
+                return
+            self.picked = [int(item.data(Qt.UserRole))]
+        self.chosen = list(self.picked)
         super().accept()
 
 
@@ -478,9 +498,25 @@ class MainWindow(QMainWindow):
         self.timeline.region_selected.connect(self.region_selected)
         self.timeline.region_removed.connect(self.region_removed)
         self.timeline.taps_cleared.connect(self.clear_taps)
+        self.timeline.taps_removed.connect(self.remove_taps)
         self.tapping = False
         self.tap_filter = TapFilter(self)
         v.addWidget(self.timeline)
+        zoom_row = QHBoxLayout()
+        self.timeline_bar = QScrollBar(Qt.Horizontal)
+        self.timeline_bar.setRange(0, 0)
+        self.timeline_bar.valueChanged.connect(self._timeline_scrolled)
+        zoom_row.addWidget(self.timeline_bar, 1)
+        for text, tip, slot in (("−", "Zoom out", lambda: self.timeline.zoom(1.6)),
+                                ("+", "Zoom in (or use the mouse wheel on the timeline)", lambda: self.timeline.zoom(0.6)),
+                                ("Fit", "Show the whole edit", self.timeline.fit)):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setFixedWidth(44 if text != "Fit" else 52)
+            b.clicked.connect(slot)
+            zoom_row.addWidget(b)
+        v.addLayout(zoom_row)
+        self.timeline.view_changed.connect(self._timeline_view)
 
         self.summary = QLabel("")
         self.summary.setObjectName("Summary")
@@ -793,9 +829,10 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted or dlg.chosen is None:
             return
         proj.checkpoint()
-        proj.pick_region_shot(a, b, dlg.chosen, dlg.freeze.isChecked())
+        proj.pick_region_shot(a, b, dlg.chosen, dlg.freeze.isChecked() and len(dlg.chosen) == 1)
         self.timeline.clear_selection()
-        self._replan(f"Putting your shot in {_mmss(a)}–{_mmss(b)}...")
+        what = "your shot" if len(dlg.chosen) == 1 else f"your {len(dlg.chosen)} shots"
+        self._replan(f"Putting {what} in {_mmss(a)}–{_mmss(b)}...")
 
     # ------------------------------------------------------------ tap to direct
     def toggle_tapping(self):
@@ -854,6 +891,26 @@ class MainWindow(QMainWindow):
         counts = {k: sum(1 for _, kind in taps if kind == k) for k in ("cut", "flash", "zoom", "shake", "drop")}
         summary = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in counts.items() if n)
         self.status.setText(f"{TAP_HELP}   [{summary or 'no taps yet'}]")
+
+    def _timeline_view(self, a: float, b: float):
+        tl = self.timeline
+        full = max(tl.full_b - tl.full_a, 1e-6)
+        self.timeline_bar.blockSignals(True)
+        self.timeline_bar.setRange(0, int(round((full - (b - a)) * 100)))
+        self.timeline_bar.setPageStep(max(1, int((b - a) * 100)))
+        self.timeline_bar.setValue(int(round((a - tl.full_a) * 100)))
+        self.timeline_bar.blockSignals(False)
+
+    def _timeline_scrolled(self, value: int):
+        self.timeline.scroll_to(self.timeline.full_a + value / 100.0)
+
+    def remove_taps(self, times: list):
+        if self.job is not None or self.tapping or not times:
+            return
+        self.project.checkpoint()
+        n = self.project.remove_taps(times)
+        self.timeline.set_taps(self.project.taps)
+        self._replan(f"Taking out {n} tap{'s' if n != 1 else ''}...")
 
     def clear_taps(self):
         if self.job is not None or not self.project.taps:
@@ -1224,6 +1281,9 @@ class MainWindow(QMainWindow):
             self.placeholder.setText(f"Preview saved:\n{path}\n\nUse \"Open in player\" to watch it.")
             return
         self.video_stack.setCurrentWidget(self.video_widget)
+        tl = self.timeline
+        if tl.zoomed():  # zoomed in on a part: play the new version from there
+            self._seek_after_load = (int(max(0.0, tl.start - tl.full_a) * 1000), True)
         self.player.setSource(QUrl.fromLocalFile(str(path)))
         self.player.play()
 

@@ -200,6 +200,13 @@ class _Planner:
                     out.setdefault(s.id, set()).add(key)
         return out
 
+    def overlay_at(self, t: float) -> SectionDirection | None:
+        t += 0.5 / self.fps
+        for ov in reversed(getattr(self, "overlays", [])):
+            if ov.start <= t < ov.end:
+                return ov
+        return None
+
     def prefer_at(self, t: float) -> dict[str, float]:
         lab = self.label_at(t)
         pref = dict(self.d.prefer.get("all", {}))
@@ -207,6 +214,9 @@ class _Planner:
         sd = self.sd_at(t)
         if sd and sd.prefer:
             pref.update(sd.prefer)
+        ov = self.overlay_at(t)
+        if ov and ov.prefer:
+            pref.update(ov.prefer)
         return pref
 
     def content_score(self, s: Shot, pref: dict[str, float]) -> float:
@@ -320,6 +330,7 @@ class _Planner:
         rest to the grid, and give every section an end (the next section's start)."""
         from .listening import EVENT_LABELS
 
+        self.overlays: list[SectionDirection] = []  # edits that change what's shown, not where the cuts are
         kept: list[SectionDirection] = []
         last_start = self.S - 1
         expanded = []
@@ -441,7 +452,11 @@ class _Planner:
             for act in rg.moments:  # freeze at the start of the selection, fades at its end
                 at = max(a, b - 1.5) if act == "fade_black" else a
                 self.d.moments.append(Moment(time=at, action=act, duration=min(1.5, b - a) if act == "fade_black" else 1.0))
-            if rg.only_moments:
+            if rg.only_moments or rg.keep_cuts:
+                if rg.keep_cuts:
+                    ov = copy.copy(rg)
+                    ov.fixed = True
+                    self.overlays.append(ov)
                 self.timeline_notes.append(f"{_mmss(a)}–{_mmss(b)} (your section edit): {rg.what or rg.note}")
                 continue
             carved = []
@@ -531,6 +546,9 @@ class _Planner:
         return base
 
     def effect_at(self, t: float, name: str) -> float:
+        ov = self.overlay_at(t)
+        if ov and name in ov.effects:
+            return float(np.clip(ov.effects[name], 0, 1))
         sd = self.sd_at(t)
         if sd and name in sd.effects:
             return float(np.clip(sd.effects[name], 0, 1))
@@ -713,6 +731,18 @@ class _Planner:
     def pick_shot(self, t0: float, need: float, prev: Cut | None) -> Shot:
         sd = self.sd_at(t0)
         pref = self.prefer_at(t0)
+        ov = self.overlay_at(t0)
+        if ov and ov.picked and ov.shots:
+            # shots the user picked for these cuts, in their order (round again if there are more cuts)
+            ids = [i for i in ov.shots if 0 <= i < len(self.footage.shots)]
+            if ids:
+                k = self.order_pos.get(id(ov), 0)
+                sid = ids[k % len(ids)]
+                if prev is not None and sid == prev.shot and len(ids) > 1:
+                    k += 1
+                    sid = ids[k % len(ids)]
+                self.order_pos[id(ov)] = k + 1
+                return self.footage.shots[sid]
         if sd and sd.hold and not sd.shots:
             pool = [s for s in self.shots if self.allowed(s)] or list(self.shots)
             def hold_score(s):
@@ -1009,7 +1039,7 @@ class _Planner:
     def apply_drum_fx(self, cuts: list[Cut]) -> None:
         """Effects the prompt tied to a drum: "flash on every snare", "slow motion on the big hits"."""
         jobs = [(e["effect"], e["drum"], e.get("label"), None) for e in self.d.drum_fx]
-        jobs += [(eff, drum, None, sd) for sd in self.d.sections for eff, drum in sd.drum_fx.items()]
+        jobs += [(eff, drum, None, sd) for sd in self.d.sections + self.overlays for eff, drum in sd.drum_fx.items()]
         beat_f = max(2, int(round(self.beat * self.fps)))
         for eff, drum, label, sd in jobs:
             a, b = (sd.start, sd.end) if sd else (self.S, self.E)

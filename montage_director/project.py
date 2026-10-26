@@ -194,20 +194,41 @@ class Project:
         self.taps = []
         self.apply_taps()
 
-    def pick_region_shot(self, start: float, end: float, shot_id: int, freeze: bool = False) -> None:
-        """Hold one shot the user chose for a selected part of the song."""
+    def pick_region_shot(self, start: float, end: float, shot_ids, freeze: bool = False) -> None:
+        """Shots the user chose for a selected part of the song: one shot is held for the whole
+        part (or frozen as a still); several shots play in order on the cuts already there."""
         if self.direction is None:
             raise ValueError("Make an edit first.")
+        ids = [shot_ids] if isinstance(shot_ids, int) else [int(i) for i in shot_ids]
+        if not ids:
+            return
         start, end = max(0.0, min(start, end)), max(start, end)
         if end - start < 0.3:
             raise ValueError("Select a longer part of the song (drag across the timeline).")
-        shot = self.footage.shots[shot_id]
-        sd = SectionDirection(start=start, end=end, fixed=True, hold=True, cut_every=8.0, shots=[shot_id],
-                              freeze_frame=freeze, energy=0.3, note=f"your pick: shot {shot_id}",
-                              what=f"your pick (shot {shot_id}{', as a still' if freeze else ''})")
-        sd.effects = {k: 0.0 for k in ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert")}
+        if len(ids) == 1:
+            sd = SectionDirection(start=start, end=end, fixed=True, hold=True, cut_every=8.0, shots=ids, picked=True,
+                                  freeze_frame=freeze, energy=0.3, note=f"your pick: shot {ids[0]}",
+                                  what=f"your pick (shot {ids[0]}{', as a still' if freeze else ''})")
+            sd.effects = {k: 0.0 for k in ("flash", "zoom", "shake", "rgb", "slowmo", "reverse", "invert")}
+        else:
+            sd = SectionDirection(start=start, end=end, fixed=True, keep_cuts=True, picked=True, shots=ids,
+                                  note=f"your picks: {len(ids)} shots",
+                                  what=f"your {len(ids)} picked shots, in order, on the cuts here")
         self.direction.regions = [r for r in self.direction.regions if r.end <= start or r.start >= end]
         self.direction.regions.append(sd)
+
+    def remove_taps(self, times: list[float]) -> int:
+        """Take out individual taps (by their time)."""
+        before = len(self.taps)
+        gone = [(t, k) for t, k in self.taps if any(abs(t - x) <= 1e-3 for x in times)]
+        self.taps = [tk for tk in self.taps if tk not in gone]
+        if self.manual_drops is not None:  # a tapped drop that's taken out stops being a drop
+            dropped = [t for t, k in gone if k == "drop"]
+            self.manual_drops = [d for d in self.manual_drops if all(abs(d - t) > 1e-3 for t in dropped)]
+            if self.direction is not None:
+                self.direction.drops = list(self.manual_drops)
+        self.apply_taps()
+        return before - len(self.taps)
 
     def remove_region(self, t: float) -> bool:
         if self.direction is None:

@@ -161,6 +161,8 @@ class Timeline(QWidget):
     region_selected = Signal(float, float)  # song seconds; (0, 0) when the selection is cleared
     region_removed = Signal(float)          # song second inside a section edit to undo
     taps_cleared = Signal()
+    taps_removed = Signal(list)             # song seconds of individual taps to take out
+    view_changed = Signal(float, float)     # the visible part of the song (zoom / scroll)
 
     def __init__(self):
         super().__init__()
@@ -168,8 +170,10 @@ class Timeline(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.song = None
         self.plan = None
-        self.start = 0.0
+        self.start = 0.0      # the visible part (zoomed in or the whole edit)
         self.end = 1.0
+        self.full_a = 0.0     # the whole edit
+        self.full_b = 1.0
         self.position = 0.0
         self.drops: list[float] | None = None  # None = the song analysis' drops
         self.selection: tuple[float, float] | None = None   # song seconds
@@ -179,7 +183,8 @@ class Timeline(QWidget):
         self._dragging = False
         self.setMouseTracking(True)
         self.setToolTip("Click to jump there. Drag across part of the song to refine just that part. "
-                        "Right-click to mark a drop or undo a section edit.")
+                        "Mouse wheel zooms in and out, Shift + wheel scrolls. "
+                        "Right-click to mark a drop, remove a tap or undo a section edit.")
 
     def current_drops(self) -> list[float]:
         if self.drops is not None:
@@ -211,7 +216,18 @@ class Timeline(QWidget):
         in_region = next((r for r in self.regions if r[0] <= t_raw < r[1]), None)
         undo = menu.addAction(f"Undo the section edit here ({in_region[2][:30]})") if in_region else None
         clear = menu.addAction("Clear the selection") if self.selection else None
-        clear_taps = menu.addAction(f"Clear my taps ({len(self.taps)})") if self.taps else None
+        near_taps = sorted(((abs(self._x(tt, self.width()) - e.pos().x()), tt, kind) for tt, kind in self.taps
+                            if abs(self._x(tt, self.width()) - e.pos().x()) < 8))
+        remove_tap = None
+        if near_taps:
+            _, tt, kind = near_taps[0]
+            remove_tap = menu.addAction(f"Remove this tap ({kind} at {int(tt // 60)}:{tt % 60:04.1f})")
+        in_sel = [tt for tt, _ in self.taps if self.selection and self.selection[0] <= tt <= self.selection[1]]
+        remove_sel = menu.addAction(f"Remove my taps in the selection ({len(in_sel)})") if in_sel else None
+        clear_taps = menu.addAction(f"Clear all my taps ({len(self.taps)})") if self.taps else None
+        menu.addSeparator()
+        zoom_in = menu.addAction("Zoom in here")
+        fit = menu.addAction("Show the whole edit") if self.zoomed() else None
         chosen = menu.exec(e.globalPos())
         if chosen is None:
             return
@@ -223,6 +239,18 @@ class Timeline(QWidget):
             return
         if chosen is clear_taps:
             self.taps_cleared.emit()
+            return
+        if chosen is remove_tap:
+            self.taps_removed.emit([near_taps[0][1]])
+            return
+        if chosen is remove_sel:
+            self.taps_removed.emit(in_sel)
+            return
+        if chosen is zoom_in:
+            self.zoom(0.5, t_raw)
+            return
+        if chosen is fit:
+            self.fit()
             return
         if chosen is add:
             drops = sorted(set(drops + [round(t, 3)]))
@@ -236,21 +264,81 @@ class Timeline(QWidget):
         self.drops_changed.emit(drops)
 
     def set_song(self, song, start: float = 0.0, end: float | None = None) -> None:
+        same = song is not None and self.song is not None and song.path == self.song.path
         self.song = song
-        self.start = start
-        self.end = end if end else (song.duration if song else 1.0)
+        self.full_a, self.full_b = start, (end if end else (song.duration if song else 1.0))
+        if not same:
+            self.start, self.end = self.full_a, self.full_b
+        self._clamp_view()
         self.update()
 
     def set_plan(self, plan) -> None:
         self.plan = plan
         if plan and self.song:
-            self.start = plan.song_start
-            self.end = plan.song_start + plan.duration
+            rng = (round(plan.song_start, 3), round(plan.song_start + plan.duration, 3))
+            view = (self.start, self.end)
+            self.full_a, self.full_b = rng
+            if rng != getattr(self, "_plan_range", None):
+                self.start, self.end = rng  # a different part of the song: show it all
+            else:
+                self.start, self.end = view  # the same edit, changed: stay where you were zoomed in
+            self._plan_range = rng
+            self._clamp_view()
         self.update()
 
     def set_position(self, seconds: float) -> None:
         self.position = seconds
+        t = self.full_a + seconds
+        if self.zoomed() and self.start <= t <= self.end + 0.5 and t > self.end - 0.05 and self._press_x is None:
+            span = self.end - self.start  # follow the playhead while zoomed in
+            self.start = t - 0.1 * span
+            self.end = self.start + span
+            self._clamp_view()
         self.update()
+
+    # ----- zoom ---------------------------------------------------------------- #
+    def zoomed(self) -> bool:
+        return (self.end - self.start) < (self.full_b - self.full_a) - 1e-3
+
+    def _clamp_view(self) -> None:
+        full = max(self.full_b - self.full_a, 1e-6)
+        span = min(full, max(min(2.0, full), self.end - self.start))
+        a = min(max(self.start, self.full_a), self.full_b - span)
+        self.start, self.end = a, a + span
+        self.view_changed.emit(self.start, self.end)
+
+    def zoom(self, factor: float, anchor: float | None = None) -> None:
+        """factor < 1 zooms in, > 1 zooms out, around song time `anchor` (default: the middle)."""
+        if anchor is None:
+            anchor = (self.start + self.end) / 2
+        frac = (anchor - self.start) / max(self.end - self.start, 1e-6)
+        span = (self.end - self.start) * factor
+        self.start = anchor - frac * span
+        self.end = self.start + span
+        self._clamp_view()
+        self.update()
+
+    def fit(self) -> None:
+        self.start, self.end = self.full_a, self.full_b
+        self._clamp_view()
+        self.update()
+
+    def scroll_to(self, start: float) -> None:
+        span = self.end - self.start
+        self.start, self.end = start, start + span
+        self._clamp_view()
+        self.update()
+
+    def wheelEvent(self, e):
+        if not self.song:
+            return
+        dy, dx = e.angleDelta().y(), e.angleDelta().x()
+        if dx or e.modifiers() & Qt.ShiftModifier:  # scroll sideways
+            steps = (dx or dy) / 120.0
+            self.scroll_to(self.start - steps * 0.15 * (self.end - self.start))
+        elif dy:
+            self.zoom(0.8 ** (dy / 120.0), self._song_time(e.position().x()))
+        e.accept()
 
     def _x(self, song_t: float, w: float) -> float:
         span = max(self.end - self.start, 1e-6)
@@ -300,8 +388,7 @@ class Timeline(QWidget):
             else:
                 self.clear_selection()
         else:
-            frac = min(1.0, max(0.0, e.position().x() / max(1, self.width())))
-            self.seek.emit(frac * (self.end - self.start))
+            self.seek.emit(self._song_time(e.position().x()) - self.full_a)
         self._press_x, self._dragging = None, False
         self.update()
 
@@ -366,10 +453,18 @@ class Timeline(QWidget):
             if self.start <= d <= self.end:
                 x = self._x(d, w)
                 p.drawLine(QPointF(x, top), QPointF(x, top + wave_h))
+        # Zoomed in: the beat grid, so cuts can be placed by eye.
+        span = self.end - self.start
+        if span <= 40 and song.beats:
+            downs = set(song.downbeats)
+            for b in song.beats:
+                if self.start <= b <= self.end:
+                    x = self._x(b, w)
+                    p.setPen(QPen(QColor(255, 255, 255, 70 if b in downs else 28), 1))
+                    p.drawLine(QPointF(x, top), QPointF(x, top + wave_h))
         # Time ruler
         p.setPen(QColor(theme.MUTED))
-        span = self.end - self.start
-        step = 5 if span <= 60 else 15 if span <= 240 else 30
+        step = 1 if span <= 8 else 2 if span <= 20 else 5 if span <= 60 else 15 if span <= 240 else 30
         t = (int(self.start) // step + 1) * step
         while t < self.end:
             x = self._x(t, w)
@@ -416,6 +511,6 @@ class Timeline(QWidget):
         p.setFont(small)
         # Playhead
         if self.plan:
-            x = self._x(self.start + self.position, w)
+            x = self._x(self.full_a + self.position, w)
             p.setPen(QPen(QColor(theme.TEXT), 2))
             p.drawLine(QPointF(x, top - 2), QPointF(x, top + wave_h + 2))
