@@ -7,6 +7,7 @@ import re
 from ..direction import DEFAULT_STYLE, style_direction
 from .apply import read_prompt, region_direction
 from .normalise import TIME_RE, normalise
+from .spelling import did_you_mean
 from .vocabulary import CUES
 
 WHO_RX = re.compile(r"\b(?:characters?|people|person|everyone|everybody|crowd|group|team|crew|squad|him|her|"
@@ -24,6 +25,9 @@ def typing_help(text: str, mode: str = "idea", has_tags: bool = False, use_ai: b
         return [], ["The AI Director understands any wording. Be specific: say WHEN (a time like 0:17, or "
                     "\"the chorus\"), WHAT should be on screen, and HOW it should cut (quick cuts, hold one shot)."]
     tips: list[str] = []
+    fixes = did_you_mean(text, style_direction(style))
+    if fixes:
+        tips.append("Did you mean " + ", ".join(f"“{good}” (not “{bad}”)" for bad, good in fixes) + "?")
     if mode == "part":
         sd, notes = region_direction(text, 0.0, 10.0)
         reading = [n.split(": ", 1)[-1] for n in notes] if sd is not None or notes else []

@@ -224,3 +224,24 @@ def test_how_people_actually_type(prompt, want):
     missing = [w for w in want if w != "?" and w.lower() not in said]
     assert not missing, (missing, d.notes)
     assert "?" in want or not d.unclear, d.unclear
+
+
+@pytest.mark.parametrize("prompt, want", [
+    ("lots of flashez and shaek on the drop", [("flashez", "flashes"), ("shaek", "shake")]),
+    ("make it glitchey with explsions", [("glitchey", "glitchy"), ("explsions", "explosions")]),
+    ("slow mo in the brigde", [("brigde", "bridge")]),
+    ("a still shot of vegeta at the end", []),       # names are never "corrected"
+    ("show piccolo and goku fighting", []),
+    ("focus on one gundam until 0:17", []),
+])
+def test_did_you_mean(prompt, want):
+    from montage_director.reader import did_you_mean
+
+    assert did_you_mean(prompt, style_direction("hype")) == want
+
+
+def test_typing_help_suggests_spelling():
+    from montage_director.reader import typing_help
+
+    _, tips = typing_help("quick cuts with zoms")
+    assert tips and "“zooms” (not “zoms”)" in tips[0]

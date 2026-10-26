@@ -387,6 +387,14 @@ class MainWindow(LayoutMixin, ProjectFilesMixin, TimelineMixin, PreviewMixin, QM
             lines.append(f"<span style='color:{theme.WARN}'>Didn't catch: {quoted}</span> "
                          f"<span style='color:{theme.MUTED}'>(try pace, effects, the kind of shots, or a time like "
                          f"\"at 1:20\"; the AI Director understands anything)</span>")
+        if not proj.settings.use_ai:
+            from ..direction import style_direction
+            from ..reader import did_you_mean
+
+            fixes = did_you_mean(proj.settings.prompt, style_direction(proj.settings.style))
+            if fixes:
+                lines.append(f"<span style='color:{theme.WARN}'>Did you mean " + ", ".join(
+                    f"“{html.escape(good)}” (not “{html.escape(bad)}”)" for bad, good in fixes) + "?</span>")
         for w in plan.warnings:
             lines.append(f"<span style='color:{theme.WARN}'>⚠ {w}</span>")
         cost = f" · AI cost so far: ${proj.ai.usage.cost:.2f}" if proj.ai else ""

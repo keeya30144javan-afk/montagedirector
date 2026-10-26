@@ -11,16 +11,17 @@ Reads a plain-English idea the way an editor would, in four steps (one file each
 4. apply.py       - turn them into a Direction: whole edit first, then parts of the song, then timed
                     sections, so the more specific instruction always wins
 
-vocabulary.py holds every word list (start there to teach it a new phrase), and typing_help.py
-the speech-bubble tips shown while typing. Anything it couldn't read is reported back so the
+vocabulary.py holds every word list (start there to teach it a new phrase), spelling.py the
+"did you mean…?" suggestions, and typing_help.py the speech-bubble tips shown while typing. Anything it couldn't read is reported back so the
 user knows to rephrase it.
 """
 
 from .apply import extract_texts, read_prompt, read_timeline, region_direction
 from .instruction import Instruction, read_instruction
 from .normalise import TIME_RE, normalise
+from .spelling import did_you_mean
 from .splitting import _split, _split_and
 from .typing_help import typing_help
 
-__all__ = ["Instruction", "TIME_RE", "_split", "_split_and", "extract_texts", "normalise", "read_instruction",
+__all__ = ["Instruction", "TIME_RE", "_split", "_split_and", "did_you_mean", "extract_texts", "normalise", "read_instruction",
            "read_prompt", "read_timeline", "region_direction", "typing_help"]
