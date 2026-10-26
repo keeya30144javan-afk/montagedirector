@@ -73,7 +73,7 @@ pip install -r requirements.txt
 python run_app.py
 ```
 
-Tests: `pip install pytest` then `pytest`.
+Tests: `pip install pytest` then `pytest`. Want to help? [CONTRIBUTING.md](CONTRIBUTING.md) maps out the code.
 
 ## Releasing a new version
 
