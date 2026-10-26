@@ -211,3 +211,16 @@ def test_fewer_cuts_and_no_reuse_phrasing():
     assert d.style.cut_every["drop"] > STYLES["cinematic"].cut_every["drop"]
     for p in ("play longer scenes and use less cuts", "longer scenes, less cuts", "too many cuts"):
         assert read(p, "cinematic").style.cut_every["verse"] > STYLES["cinematic"].cut_every["verse"], p
+
+
+from tests.phrasings import CASES, LONG  # noqa: E402
+
+
+@pytest.mark.parametrize("prompt, want", CASES + LONG)
+def test_how_people_actually_type(prompt, want):
+    """A few hundred prompts written the way people type them: every one must read the way it was meant."""
+    d = read(prompt)
+    said = " · ".join(d.notes).lower()
+    missing = [w for w in want if w != "?" and w.lower() not in said]
+    assert not missing, (missing, d.notes)
+    assert "?" in want or not d.unclear, d.unclear

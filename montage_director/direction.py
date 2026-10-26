@@ -235,6 +235,10 @@ def _cut_rate(clause: str) -> float | None:
         return 0.5
     if re.search(r"\b(?:every|each|on (?:every|each|the)) downbeats?\b", clause):
         return 4.0
+    m = re.search(r"\b(?:one|a|1|single) (?:cut|clip|shot|scene|change) (?:per|a|each|every|on every|on each) (beat|bar|measure)\b",
+                  clause)
+    if m:
+        return 4.0 if m.group(1) != "beat" else 1.0
     m = re.search(r"\b(?:every|each|on (?:every|each|the))\s+(\d+|one|two|three|four|eight|other|single)?\s*"
                   r"(beat|beats|bar|bars|measure|measures)\b", clause)
     if not m:

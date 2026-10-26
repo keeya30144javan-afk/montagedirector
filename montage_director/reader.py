@@ -44,6 +44,23 @@ def _tok(seconds: float) -> str:
     return f"{whole // 60}:{whole % 60:02d}" + (f".{int(frac * 10)}" if frac else "")
 
 
+TYPOS = {  # common misspellings in edit ideas
+    "quik": "quick", "quck": "quick", "qucik": "quick", "fsat": "fast", "fasst": "fast",
+    "flahses": "flashes", "flashs": "flashes", "flahs": "flash", "flsh": "flash", "falshes": "flashes",
+    "falsh": "flash", "shakey": "shaky", "shakeing": "shaking", "zooom": "zoom", "zoomes": "zooms",
+    "transistions": "transitions", "transitons": "transitions", "transtions": "transitions",
+    "crossfades": "crossfades", "corssfade": "crossfade", "crosfade": "crossfade", "crossfad": "crossfade",
+    "explosians": "explosions", "explostions": "explosions", "explotions": "explosions", "exlposions": "explosions",
+    "chrous": "chorus", "choruse": "chorus", "corus": "chorus", "chourus": "chorus", "begining": "beginning",
+    "beggining": "beginning", "begginning": "beginning", "agressive": "aggressive", "verticle": "vertical",
+    "verical": "vertical", "intesne": "intense", "intens": "intense", "glich": "glitch", "glitchy": "glitchy",
+    "efects": "effects", "effecs": "effects", "efffects": "effects", "scences": "scenes", "senes": "scenes",
+    "sences": "scenes", "fight scences": "fight scenes", "fihgt": "fight", "figth": "fight", "fighitng": "fighting",
+    "repeates": "repeats", "reapeat": "repeat", "dorp": "drop", "drpo": "drop", "slwo": "slow", "slwoer": "slower",
+    "fater": "faster", "fasster": "faster", "freez": "freeze", "freezeframe": "freeze frame",
+}
+
+
 def normalise(prompt: str) -> str:
     t = " " + prompt.lower() + " "
     t = (t.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
@@ -53,7 +70,9 @@ def normalise(prompt: str) -> str:
         t = re.sub(rf"\b{a}\b", b, t)
     t = re.sub(r"\bdo not\b", "don't", t)
     t = re.sub(r"\b(?:id|i'd) (?:like|love|want)\b", "i want", t)
-    t = re.sub(r"\b(slo-?mo|slow-mo|slowmo|slow mo|slomo)\b", "slow motion", t)
+    for typo, word in TYPOS.items():
+        t = re.sub(rf"\b{typo}\b", word, t)
+    t = re.sub(r"\b(slo-?mo|slow-mo|slowmo|slow mo|slomo|slowmotion|slow-motion|slomotion)\b", "slow motion", t)
     t = re.sub(r"\bsped up\b", "speed up", t)
     t = re.sub(r"\b(asf|af|as hell|as fuck)\b", " super ", t)
     t = re.sub(r"\b(drop|chorus|verse|hook|breakdown|bridge|build)\s*(\d)\b",
@@ -71,7 +90,7 @@ def normalise(prompt: str) -> str:
     t = re.sub(r"\b(?:the\s+)?(?:second|last|back) half(?: of the (?:song|edit|video))?\b|\bhalf ?way(?: through| point| mark)?\b"
                r"|\bmidway\b|\b(?:in )?the middle of the (?:song|edit|video)\b", " @half ", t)
     # absolute times written out
-    t = re.sub(rf"\b(\d{{1,2}})\s*(?:minutes?|mins?|m)\s*(?:and\s+)?(\d{{1,2}})\s*(?:seconds?|secs?|s)?\b",
+    t = re.sub(rf"\b(\d{{1,2}})\s*(?:minutes?|mins?|m)\s*(?:and\s+)?(\d{{1,2}})(?:\s*(?:seconds?|secs?|s)\b)?",
                lambda m: f"{int(m.group(1))}:{int(m.group(2)):02d}", t)
     t = re.sub(rf"\b(\d{{1,2}})\s*{mins}(?:\s+mark)?", lambda m: f"{int(m.group(1))}:00", t)
     t = re.sub(rf"(?<![\d:@a-z])(\d{{1,4}}(?:\.\d)?)\s*{sec}(?:\s+mark)?(?:\s+in)?",
@@ -98,7 +117,7 @@ CUES = [
     ("hits", r"hard (?:drums|hits|stabs)|\b1\s*,?\s*2\s*,?\s*3\s*,?\s*4\b|\bstabs\b|\baccents\b|big hits|four hits"
              r"|the hits\b(?! in)"),
     ("solo", r"guitar solo|\bsolo\b|\blead (?:guitar|melody)\b"),
-    ("drums_faster", r"drums?\b.{0,30}\b(?:faster|frantic|speed|speeding|busier|intense|crazy)"
+    ("drums_faster", r"drums?\b.{0,30}?\b(?:faster|frantic|speed|speeding|busier|intense|crazy)"
                      r"(?: and (?:more |even more )?(?:frantic|intense|crazy|busier|faster|wild))*|\bfrantic drums\b"
                      r"|double time drums"),
     ("ringout", r"note (?:ends|rings|fades)|rings? out|\bringing\b|\brings\b|last note|end of the song|\bthe end\b"
@@ -120,7 +139,7 @@ CUE_NAMES = {"hits": "hard hits", "solo": "solo", "drums_faster": "drums get fas
 STRONG = r"(?:super|really|very|so|extremely|insanely|ultra|mega|way|hella|absolutely|totally|max|maximum|too)"
 MILD = r"(?:a little|a bit|a little bit|slightly|kinda|kind of|somewhat|a tad|bit|mildly|little)"
 NONE = r"(?:no|not|without|don't|never|zero|hate|avoid|stop|skip|remove|get rid of|lose the|nothing|none|isn't|aren't|shouldn't|won't|can't)"
-LESS = r"(?:less|fewer|not as many|not so many|not as much|tone down|toned down|lower|reduce|cut down on|not too many|dial back|dial down|calm down the)"
+LESS = r"(?:less|fewer|not as many|not so many|not as much|tone down|toned down|lower|reduce|cut down on|not too many|dial back|dial down|calm down the|too many|too much)"
 LIGHT = r"(?:a few|some|light|subtle|little|small|minimal|occasional|slight|soft|a couple|couple of|just a few|only a few|sprinkle of|bit of|a bit of|hint of)"
 MORE = r"(?:more|lots of|lot of|a lot of|tons of|ton of|heavy|heavier|extra|plenty of|loads of|max|crazy|big|bigger|strong|stronger|many|frequent|constant|all the|insane|nonstop|so many|alot of)"
 
@@ -137,15 +156,18 @@ FAST = (r"fast(?:er)?|quick(?:er|ly)?|rapid(?:ly)?|hype(?:d)?|aggressive|crazy|i
         r"go(?:es)? off|go hard|goes hard|speed (?:it )?up|speeds up|pick(?:s)? (?:it |back )?up|picks back up|energetic|"
         r"high energy|frantic|flurry|barrage|hectic|nonstop|hard[- ]hitting|lit|snappy|choppy|rapid fire|"
         r"go (?:all )?out|turn (?:it )?up|amp(?:ed)? (?:it )?up|go nuts|go ham|explode|hit hard|hits hard|hit harder|hits harder|harder|"
-        r"more cuts|cut more|more often|shorter cuts")
+        r"more cuts|cut more|more often|shorter cuts|more energy|energy|pumped|pump it up|bang|banger|turnt|lively")
 SLOW = (r"slow(?:er)?(?! motion)|slow (?:it )?down|slows down|calm(?:er)?|chill(?:er)?|mellow|relax(?:ed|ing)?|gentle|"
         r"peaceful|soft(?:er)?|emotional|sad|melanchol(?:y|ic)|laid back|take it easy|long(?:er)? (?:shots|cuts|clips|scenes|takes)|play (?:out )?longer|(?:scenes?|shots?|clips?) (?:play|last|run) longer|"
         r"last longer|stay (?:on screen )?longer|hold (?:them |it |each (?:one |shot )?)?longer|"
+        r"hold (?:the |each )?(?:shots?|clips?|scenes?) (?:a bit |a little )?longer|give (?:each|every|the) (?:shot|clip|scene)s? "
+        r"more time|more time (?:on|for) (?:each|every)|"
         r"(?:not|don't|no) (?:use |have |do )?(?:so|too|as) many cuts|too many cuts|less cutting|cut less often|"
         r"let it breathe|breathe|tone it down|calm it down|ease up|low energy|quiet|mysterious|eerie|creepy|spooky|"
         r"ominous|haunting|less cuts|fewer cuts|cut less|less often|longer cuts|drawn[- ]out|play out|let (?:them|it|the "
         r"(?:fights?|shots?|scenes?)) play")
 NORMAL = (r"back to (?:normal|the flow|the groove|regular|how it was|the melody|the (?:main )?(?:beat|vibe|rhythm|pace))|"
+          r"normal speed|regular speed|medium speed|normal cuts|regular cuts|"
           r"normal pace|regular pace|the flow|groove|steady|medium pace|go back|goes back|melody")
 HOLD = (r"still shot|one shot|single shot|\bhold(?:s|ing)?\b|held shot|panning shot|pan shot|one long shot|"
         r"stay on (?:one|a|the)|linger|let (?:it|the shot) play|don't cut|no cuts|long take|"
@@ -210,7 +232,7 @@ they thing things this those though through till too under until upon very want 
 which while who whom why will with within without would yet you your yours start end ending middle beginning intro
 outro verse chorus drop drops bridge build section sections second seconds minute minutes time times bit lot lots
 character characters people person guy guys scene scenes shot shots clip clips footage video edit edits cut cuts
-moment moments possible get getting look looks looking happen happens happening put putting use using try
+moment moments possible get gets getting look looks looking happen happens happening put putting use using try
 final screen bunch frame frames image picture whole entire every each other way long short too much fast slow
 focus focused focuses focusing one two three single just only beat beats bass include includes including packed
 shows showing drawn real vibe vibes juxtaposition contrast subject matter liter literal literally kinda pretty fun
@@ -289,6 +311,11 @@ def _split(text: str) -> list[str]:
         # belongs to the moment just described
         asks = re.match(r"(?:and )?(?:i want|i wanna|we can|we could|let's|lets|give me|show|have|put|use|make|"
                         r"there should|it should|i need)\b", p)
+        # "a scene of the gundam wing, with the feather wings, until 0:17": more about the same shot
+        if merged and re.match(r"(?:with|wearing|holding|where|who|that has|which has) (?:the|his|her|their|its|a|an)\b", p) \
+                and not FAST_RX.search(p) and not SLOW_RX.search(p):
+            merged[-1] = merged[-1] + " " + p
+            continue
         # ", until about 0:17 when the beat drops" ends the instruction before it
         if merged and re.match(r"(?:and |then )?(?:until|till|til|up to|up until|all the way to|through|thru|right up to)\b", p) \
                 and _only_scope(p):
@@ -324,7 +351,21 @@ def _split_and(piece: str) -> list[str]:
                     last = m.start() + (len(m.group(0)) if joiner == r"\band\b" else 0)
             nxt.append(p[last:])
         out = nxt
-    return [p for p in out if p.strip()]
+    # no punctuation at all: "slow intro fast chorus" -> "slow intro" | "fast chorus"
+    final: list[str] = []
+    for p in out:
+        cut = None
+        for m in SECTION_RX.finditer(p):
+            left, right = p[:m.end()], p[m.end():]
+            if SECTION_RX.search(right) and _intent_words(left) and _intent_words(right) \
+                    and not re.match(r"\s*(?:and|then|,)", right):
+                cut = m.end()
+                break
+        if cut:
+            final += [p[:cut], p[cut:]]
+        else:
+            final.append(p)
+    return [p for p in final if p.strip()]
 
 
 def _scope_key(text: str) -> tuple:
@@ -349,6 +390,7 @@ def _intent_words(text: str) -> bool:
                 or any(rx.search(text) for rx, _ in EFFECT_RX) or any(rx.search(text) for rx, _, _ in CONTENT_RX)
                 or re.search(r"\bfreeze|\bfade|\bsync|\bon the (?:snare|kick|beat|hits?)|\bcut (?:on|with|to)\b|coincid|"
                              r"line up|match the|with (?:the|those) (?:hits|drums)|with those|on (?:each|every) (?:hit|drum)|"
+                             r"\bfocus(?:es|ed|ing)? on\b|\b(?:one|a single) (?:shot|scene)\b|"
                              r"\b(?:show|shows|showing|use|using|put|feature|featuring)\s+(?:the |a |an |some |his |her |their )?"
                              r"[a-z]{3,}",
                              text))
@@ -489,6 +531,9 @@ def read_instruction(text: str) -> Instruction:
                 ins.cue = kind
                 take(m)
                 break
+    if ins.cue == "drop" and len(ins.times) == 1 and not re.search(r"\b(?:go|cut|show|hold|slow|fast|quick|crazy)", work):
+        ins.drop_at, ins.cue = ins.times[0], None  # "the beat drops at 0:32": where the drop is
+        ins.times = []
     if ins.cue == "drop" and len(ins.times) == 2:
         # "from the start till 0:17 when the beat drops": the drop marks the END of this instruction
         ins.drop_at, ins.cue = ins.times[1], None
@@ -520,11 +565,12 @@ def read_instruction(text: str) -> Instruction:
     if m:
         ins.all_effects = "more"
         take(m)
-    m = re.search(r"\b(?:no|without|zero|skip the|no extra) (?:effects|fx|filters)\b|\bcuts? only\b|\bjust (?:the )?cuts\b", work)
+    m = re.search(r"\b(?:no|without|zero|skip the|no extra) (?:effects|fx|filters)\b|\bcuts? only\b|\bjust (?:the )?cuts\b|"
+                  r"\bonly (?:the )?cuts\b|\bnothing but cuts\b|\bplain cuts\b", work)
     if m:
         ins.all_effects = "none"
         take(m)
-    m = re.search(rf"\b(?:{MORE}|{LESS}|{LIGHT})\s+(?:effects|fx)\b", work)
+    m = re.search(rf"\b(?:{MORE}|{LESS}|{LIGHT})\s+(?:the |all the |all of the )?(?:effects|fx)\b", work)
     if m and not ins.all_effects:
         a = _amount(work[:m.start() + len(m.group(0)) - len(m.group(0).split()[-1])])
         ins.all_effects = {"light": "less", "add": "more"}.get(a, a)
@@ -574,6 +620,15 @@ def read_instruction(text: str) -> Instruction:
         ins.velocity = True
         take(m)
 
+    complaint = re.search(r"\btoo (?:fast|quick|choppy|hectic|busy|frantic|crazy|chaotic|much cutting|many cuts)\b|"
+                          r"\b(?:less|not as|not so|stop being|way too) (?:choppy|fast|hectic|busy|quick|frantic|chaotic)\b|"
+                          r"\b(?:don't|do not|stop|not) cut(?:ting)? (?:it )?(?:up )?(?:so |too |as )?(?:much|fast|often|quick(?:ly)?)\b|"
+                          r"\bcut (?:less|slower)\b|\bhold (?:the |each |every )?(?:shots?|clips?|scenes?|them|it)? ?"
+                          r"(?:a bit |a little )?longer\b|\bgive (?:each|every|the) (?:shot|clip|scene)s? more time\b", work)
+    if complaint and _negated(work, complaint.start()) and complaint.group(0).startswith("too"):
+        complaint = None  # "not too crazy" is a mild ask, not a complaint
+    if complaint:  # "it's too choppy", "stop cutting so fast", "hold the shots longer": slower
+        take(complaint)
     m = HOLD_RX.search(work)
     if m:
         ins.hold = True
@@ -644,7 +699,9 @@ def read_instruction(text: str) -> Instruction:
         if not _negated(work, m.start()):
             gentle = re.match(r"drawn|play out|let ", m.group(0))  # "drawn out fights": a touch longer, not slow
             down = max(down, 0.5 if gentle else _strength(work, m.start(), m.end()))
-    if fast or slow:
+    if complaint:
+        down = max(down, 1.0)
+    if fast or slow or complaint:
         ins.pace = up - down if (up or down) else None
         if ins.pace == 0.0 and not normal:
             ins.pace = None
@@ -704,7 +761,8 @@ def read_instruction(text: str) -> Instruction:
 GLOBAL_HINTS = [
     # (pattern, what it does, note)
     (r"\b(?:sync|synced|match|follow|flow with|move with|vibe with|cut to|cuts? on|feel)\b[\w\s]{0,25}\b(?:the )?"
-     r"(?:music|song|beat|rhythm|energy|groove)\b|\bon beat\b|\bbeat ?sync(?:ed)?\b", "follow", "following the music (always on)"),
+     r"(?:music|song|beat|rhythm|energy|groove)\b|\bon beat\b|\bbeat ?sync(?:ed)?\b|"
+     r"\b(?:slow|calm|quiet|chill) parts?\b.{0,30}\b(?:fast|hype|loud|intense|crazy) parts?\b", "follow", "following the music (always on)"),
     (r"\b(?:lots of|more|many|smooth|cool|sick) transitions\b|\btransitions? between\b", "transitions",
      "transitions: soft blurs into each part, white fades into the drops"),
     (r"\bjump cuts\b|\bhard cuts\b|\bno transitions\b|\bstraight cuts\b", "hard_cuts", "hard cuts, no transitions"),
@@ -828,15 +886,17 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
         d.aspect = "1:1"
         notes.append("square 1:1")
     text = re.sub(r"\bre[- ](use|using|used|peat|peats|peating)\b", r"re\1", text)  # "re use scenes"
-    if re.search(r"\b(?:no|don't|never|without|avoid|stop|zero)\b[\w\s']{0,20}\b(?:repeat|repeats|repeating|reuse|reusing|"
-                 r"duplicate|duplicates|same (?:clip|scene|shot)s?)\b|\bunique (?:clips|scenes|shots)\b|\beach (?:clip|scene|shot) once\b",
+    if re.search(r"\b(?:no|don't|never|without|avoid|stop|zero)\b[\w\s']{0,20}\b(?:repeat|repeats|repeated|repeating|reuse|reused|"
+                 r"reusing|duplicate|duplicates|same (?:clip|scene|shot)s?)\b|\bunique (?:clips|scenes|shots)\b|"
+                 r"\b(?:each|every) (?:clip|scene|shot) (?:only )?once\b|\b(?:clips|scenes|shots) only once\b",
                  text):
         d.repeats = "never"
         notes.append("no repeated scenes")
     elif re.search(r"\b(?:repeat|reuse|callback)s?\b", text):
         d.repeats = "allowed"
         notes.append("repeats allowed")
-    m = re.search(rf"\b(?:the )?drop (?:is|hits|happens|comes)? ?(?:at|around|about) ({T})(?![~\d])", text)
+    m = re.search(rf"\b(?:the )?(?:beat |bass )?drops? (?:is |hits |happens |comes |comes in |kicks in )?(?:at|around|about) ({T})(?![~\d])",
+                  text)
     if not m:
         m = re.search(rf"\b(?:at|around) ({T}),? (?:is )?(?:where )?(?:the|when the) (?:bass |beat )?drop(?:s)?\b(?! [a-z]+ (?:quick|fast|crazy))",
                       text)
@@ -849,7 +909,9 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
     # 1. whole edit (pace words across the prompt count once: "not too fast, keep it chill")
     paces = [i.pace for i in instructions if i.scope == "all" and i.pace]
     if paces:
-        overall = max([p for p in paces if p > 0], default=0.0) + min([p for p in paces if p < 0], default=0.0)
+        up = max([p for p in paces if p > 0], default=0.0)
+        down = min([p for p in paces if p < 0], default=0.0)
+        overall = up + (0.5 * down if up and down > -1 else down)  # "kinda fast but not too crazy": still faster
         first = True
         for ins in instructions:
             if ins.scope == "all" and ins.pace:
@@ -930,7 +992,11 @@ def _meaningful(text: str) -> bool:
     if not words:
         return False
     hinted = any(re.search(p, text) for p, _, _ in GLOBAL_HINTS) or any(re.search(p, text) for p, _, _ in LOOKS)
+    if re.search(r"\b(?:it'?s|its|it is|that'?s|this is|is) (?:hard|difficult|impossible|confusing|annoying|boring|"
+                 r"too much)\b|\bcan'?t (?:follow|see|tell|keep up)\b", text):
+        return False  # a complaint about the edit, read with the rest of the sentence
     shape = re.search(r"vertical|tiktok|shorts|reels|square|portrait|repeat|reuse|letterbox|glow|trail|ghost|drop (?:is|at)|"
+                      r"\bonce\b|"
                       r"length of the song|whole song|full song|entire song|all of the song", text)
     return not (hinted or shape)
 
@@ -1103,7 +1169,7 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
     point_fx = {a: 0.0 for a in ins.moments}
     if not window and not ins.span and (times or ins.cue == "end") and len(times) <= 1 and (ins.moments or ins.effects) \
             and not (ins.pace is not None or ins.hold or ins.sync or ins.prefer or ins.cut_rate or ins.ramp
-                     or ins.velocity or (ins.cue not in (None, "end", "ringout"))):
+                     or ins.velocity or (ins.cue not in (None, "end", "ringout") and not times)):
         acts = list(point_fx) + [e for e, amt in ins.effects.items() if amt != "none"]
         t = times[0] if times else -1.0
         for a in acts:
