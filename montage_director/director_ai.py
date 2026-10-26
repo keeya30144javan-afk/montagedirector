@@ -49,7 +49,7 @@ TILE_W, TILE_H, COLS, ROWS = 192, 108, 8, 5
 STRIP_W, STRIP_H, STRIP_COLS, STRIP_ROWS = 384, 72, 4, 10
 GRADES = ["none", "y2k", "sad", "cinematic", "vhs", "mono", "dream"]
 SHOT_KINDS = ["action", "character", "scenery", "dialogue", "text_or_ui", "other"]
-TAG_VERSION = 2
+TAG_VERSION = 3
 
 
 class AIDirectorError(Exception):
@@ -68,6 +68,7 @@ TAG_SCHEMA = _obj({
         "id": {"type": "integer"},
         "desc": {"type": "string", "description": "at most 14 words: who is on screen, what they do, mood"},
         "kind": {"type": "string", "enum": SHOT_KINDS},
+        "people": {"type": "integer", "description": "how many characters or people are clearly visible (0 if none)"},
     })},
 })
 
@@ -122,6 +123,8 @@ For every shot id, write a short description an editor can search: who is on scr
 - dialogue: talking scenes
 - text_or_ui: title cards, captions, numbers, logos, narrator overlays, menus, subscribe screens, credits
 - other
+
+Also count the characters or people clearly visible in the shot (people), so a group shot of five fighters is 5 and a close-up is 1.
 
 Describe every shot id you are given, exactly once."""
 
@@ -287,6 +290,46 @@ class Usage:
         return cost
 
 
+def _read_tags(cf: Path) -> dict[int, dict]:
+    if not cf.is_file():
+        return {}
+    try:
+        return {int(k): v for k, v in json.loads(cf.read_text(encoding="utf-8")).items()}
+    except (OSError, ValueError):
+        return {}
+
+
+def cached_tags(footage: Footage) -> dict[int, dict]:
+    """Shot descriptions made earlier (no AI call): {shot id: {desc, kind, people}}."""
+    tags: dict[int, dict] = {}
+    by_source: dict[int, list[Shot]] = {}
+    for s in footage.shots:
+        by_source.setdefault(s.source, []).append(s)
+    for src_i, shots in by_source.items():
+        path = Path(footage.sources[src_i].path)
+        try:
+            cached = (_read_tags(cache_dir() / "tags" / f"{file_key(path, TAG_VERSION, len(shots))}.json")
+                      or _read_tags(cache_dir() / "tags" / f"{file_key(path, 2, len(shots))}.json"))
+        except OSError:
+            continue
+        for local, s in enumerate(shots):
+            if local in cached:
+                tags[s.id] = cached[local]
+    return tags
+
+
+def describe_cost(footage: Footage, model: str = "claude-haiku-5-5") -> tuple[int, float]:
+    """(shots still to describe, rough cost in dollars) for describing the footage."""
+    done = cached_tags(footage)
+    todo = [s for s in footage.shots if s.usable and (s.id not in done or "people" not in done[s.id])]
+    per_request = STRIP_COLS * STRIP_ROWS * 4
+    requests = (len(todo) + per_request - 1) // per_request
+    tokens_in = requests * (4 * 1700 + 900)
+    tokens_out = len(todo) * 45 + requests * 400
+    _, pin, pout, _ = MODELS.get(model, MODELS["claude-haiku-5-5"])
+    return len(todo), tokens_in * pin / 1e6 + tokens_out * pout / 1e6
+
+
 @dataclass
 class AIDirector:
     """One conversation with Claude about one edit. Call direct() once, then refine()."""
@@ -364,6 +407,7 @@ class AIDirector:
 
     # ----- step 1: describe the footage (cached per video) ------------------- #
     def describe_footage(self, footage: Footage, cancel=None, progress=None) -> dict[int, dict]:
+        """Describe every shot (who, what, how many people), once per video: cached on disk."""
         by_source: dict[int, list[Shot]] = {}
         for s in footage.shots:
             by_source.setdefault(s.source, []).append(s)
@@ -374,14 +418,9 @@ class AIDirector:
             path = Path(footage.sources[src_i].path)
             cf = cache_dir() / "tags" / f"{file_key(path, TAG_VERSION, len(shots))}.json"
             cache_files[src_i] = cf
-            cached = {}
-            if cf.is_file():
-                try:
-                    cached = {int(k): v for k, v in json.loads(cf.read_text(encoding="utf-8")).items()}
-                except (OSError, ValueError):
-                    cached = {}
+            cached = _read_tags(cf) or _read_tags(cache_dir() / "tags" / f"{file_key(path, 2, len(shots))}.json")
             for local, s in enumerate(shots):
-                if local in cached:
+                if local in cached and "people" in cached[local]:
                     tags[s.id] = cached[local]
                 elif s.usable:
                     todo.append(s)
@@ -404,7 +443,8 @@ class AIDirector:
             if progress:
                 progress(done["n"] / len(todo), f"AI is watching your footage ({done['n']}/{len(todo)} shots)")
             wanted = {s.id for s in batch}
-            return {int(t["id"]): {"desc": str(t.get("desc", ""))[:160], "kind": t.get("kind", "other")}
+            return {int(t["id"]): {"desc": str(t.get("desc", ""))[:160], "kind": t.get("kind", "other"),
+                                   "people": int(max(0, min(50, t.get("people", 0) or 0)))}
                     for t in raw.get("shots", []) if int(t.get("id", -1)) in wanted}
 
         if progress:

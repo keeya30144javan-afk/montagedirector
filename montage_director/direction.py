@@ -136,6 +136,7 @@ class SectionDirection:
     freeze_frame: bool = False  # a held shot shown as a still picture (the frame the user picked)
     keep_cuts: bool = False     # a selected-part edit that only changes what's shown: the cuts stay as they are
     picked: bool = False        # shots the user chose by hand (always used, in this order)
+    transition: str | None = None  # crossfade | dissolve | whip | zoom | white | black | circle | wipe
 
 
 @dataclass
@@ -168,6 +169,14 @@ class Direction:
     velocity: list[str] = field(default_factory=list)        # labels cut as a velocity edit
     unclear: list[str] = field(default_factory=list)         # parts of the prompt the free reader didn't get
     rate_locked: list[str] = field(default_factory=list)     # labels whose beats-per-cut the user set exactly
+    transitions: dict[str, str] = field(default_factory=dict)  # label / "all" / "@sections" -> transition kind
+    texts: list[dict] = field(default_factory=list)          # text cards from the prompt {text, time, duration, style}
+    user_texts: list[dict] = field(default_factory=list)     # text cards added in the app
+    favorites: list[int] = field(default_factory=list)       # ★ shots: used more, at the big moments
+    banned: list[int] = field(default_factory=list)          # ✕ shots: never used
+    tap_exact: list[float] = field(default_factory=list)     # taps placed exactly (not snapped to a hit)
+    tap_scenes: list[dict] = field(default_factory=list)     # scene-key taps: {time, prefer, favorites}
+    shot_tags: dict[int, dict] = field(default_factory=dict)  # AI shot descriptions {id: {desc, kind, people}}
 
     def section_direction(self, t: float) -> SectionDirection | None:
         for s in self.sections:
@@ -239,7 +248,8 @@ def _rate_label(rate: float) -> str:
     return {0.5: "half beat", 1.0: "beat", 2.0: "2 beats", 4.0: "bar", 8.0: "2 bars"}[rate]
 
 
-_EFFECT_WORDS = ("flash", "shake", "zoom", "glitch", "rgb", "slow mo", "slowmo", "slow-mo", "slow motion",
+_EFFECT_WORDS = ("crossfade", "cross fade", "dissolve", "whip", "transition", "wipe", '"', "\u201c",
+                 "flash", "shake", "zoom", "glitch", "rgb", "slow mo", "slowmo", "slow-mo", "slow motion",
                  "reverse", "strobe", "invert", "glow", "bloom", "trail", "ghost", "freeze", "fade", "letterbox",
                  "vhs", "grain", "black and white", "b&w", "monochrome", "y2k", "cinematic", "grade", "effect")
 

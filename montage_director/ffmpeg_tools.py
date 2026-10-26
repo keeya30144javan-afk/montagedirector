@@ -162,9 +162,9 @@ class ProcessGroup:
         self._lock = threading.Lock()
         self._procs: set[subprocess.Popen] = set()
 
-    def run(self, cmd: list[str], cancel=None) -> None:
+    def run(self, cmd: list[str], cancel=None, cwd=None) -> None:
         check_cancel(cancel)
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, cwd=cwd,
                                 **_popen_kwargs())
         with self._lock:
             self._procs.add(proc)

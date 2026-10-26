@@ -152,6 +152,17 @@ RAMP = (r"faster and faster|quicker and quicker|more and more cuts|speed(?:s|ing
         r"gradually (?:faster|quicker|speed(?:s|ing)? up)|build(?:s|ing)? (?:up )?(?:the )?tension|accelerat\w+|"
         r"getting (?:faster|quicker)|ramp(?:s|ing)? up|cuts? speed(?:s|ing)? up|build(?:s|ing)? up (?:the )?(?:speed|pace|cuts)")
 VELOCITY = r"velocity|speed ramps?|speed-ramp(?:s|ing)?|speed changes|time ?remap"
+TRANSITION_WORDS = [  # (pattern, kind), most specific first
+    (r"\b(?:cross ?fades?|cross-fades?|crossfading|cross[- ]dissolves?|fades? between|blend(?:s|ing)? (?:between|into)|"
+     r"fade (?:from one|between) (?:shot|scene|clip)s?)\b", "crossfade"),
+    (r"\bdissolves?\b", "dissolve"),
+    (r"\bwhip(?:s| pans?| transitions?)?\b|\bswipes?\b|\bslide transitions?\b", "whip"),
+    (r"\bzoom(?:-| )?(?:transitions?|through|thru)\b|\bzoom between\b", "zoom"),
+    (r"\b(?:dips? to white|white dips?|fade through white|white transitions?|flash transitions?)\b", "white"),
+    (r"\b(?:dips? to black|black dips?|fade through black|black transitions?)\b", "black"),
+    (r"\bcircle (?:wipes?|transitions?|opens?)\b", "circle"),
+    (r"\bwipes?\b|\bwipe transitions?\b", "wipe"),
+]
 DRUMS = [  # what "on the ..." can mean (pattern, drum)
     (r"snares?|claps?|backbeat", "snare"),
     (r"kicks?(?: drums?)?|bass drums?|808s?|bass hits?|the bass\b|bass", "kick"),
@@ -187,6 +198,18 @@ CONTENT = [  # (pattern, preferences, what to call it)
     (r"purple (?:scenes|shots|parts)?|pink (?:scenes|shots|parts)?", {"hue": 290.0}, "purple shots"),
     (r"gold(?:en)? (?:scenes|shots|parts)?|yellow (?:scenes|shots|parts)?", {"hue": 50.0, "bright": 0.4}, "golden shots"),
 ]
+QUERY_SKIP = set("""about above after again against also another around away back because been before being below
+between both but can could did does doing down during each even ever every few first from further give going gonna got
+had has have having her here hers him his how into its just last later least less let lets like made make many more
+most much must near need next not now off once one only other our out over own part parts put really right same
+see seem seems shall she should show some something song still such take than that the their them then there these
+they thing things this those though through till too under until upon very want was way well were what when where
+which while who whom why will with within without would yet you your yours start end ending middle beginning intro
+outro verse chorus drop drops bridge build section sections second seconds minute minutes time times bit lot lots
+character characters people person guy guys scene scenes shot shots clip clips footage video edit edits cut cuts
+moment moments possible get getting look looks looking happen happens happening put putting use using try
+final screen bunch frame frames image picture whole entire every each other way long short too much fast slow
+quick quicker slower faster cool sick nice good great best better bad kind sort feel""".split())
 FILLER = re.compile(r"\b(i want|i'd like|i would like|i need|please|make it|make the|make this|the edit|this edit|edit|it|"
                     r"should|would|be|have|has|to|of|the|a|an|and|with|for|in|on|is|are|that|this|my|me|i|you|"
                     r"thanks|thank you|ok|okay|like|just|really|very|so|some|lot|lots|also|too|then|there|"
@@ -309,6 +332,7 @@ def _intent_words(text: str) -> bool:
         text = re.sub(p, " ", text)
     return bool(FAST_RX.search(text) or SLOW_RX.search(text) or NORMAL_RX.search(text) or HOLD_RX.search(text)
                 or RAMP_RX.search(text) or VELOCITY_RX.search(text) or _cut_rate(text) is not None
+                or any(re.search(p, text) for p, _ in TRANSITION_WORDS)
                 or any(rx.search(text) for rx, _ in EFFECT_RX) or any(rx.search(text) for rx, _, _ in CONTENT_RX)
                 or re.search(r"\bfreeze|\bfade|\bsync|\bon the (?:snare|kick|beat|hits?)|\bcut (?:on|with|to)\b|coincid|"
                              r"line up|match the|with (?:the|those) (?:hits|drums)|with those|on (?:each|every) (?:hit|drum)",
@@ -352,6 +376,7 @@ class Instruction:
     frantic: bool = False           # asked for the quickest cutting (half beats)
     people: bool = False            # asked for particular characters / a group: the free director can't see who
     on_taps: bool = False           # "for every marker / tap / cut I made": keep the cuts, change the shots
+    transition: str | None = None   # crossfade | dissolve | whip | zoom | white | black | circle | wipe
     understood: bool = False
 
 
@@ -512,6 +537,12 @@ def read_instruction(text: str) -> Instruction:
                       r"(?:beat|beats|bar|bars|measure|measures)\b|\b(?:twice (?:a|per|every) beat|half[- ]beats?|double[- ]time)\b",
                       lambda m: " " * len(m.group(0)), work)
 
+    for word, kind in TRANSITION_WORDS:
+        m = re.search(word, work)
+        if m:
+            ins.transition = "none" if _negated(work, m.start()) else kind
+            take(m)
+            break
     for m in list(RAMP_RX.finditer(work)):
         ins.ramp = True
         take(m)
@@ -560,9 +591,12 @@ def read_instruction(text: str) -> Instruction:
 
     # shot content
     for rx, pref, name in CONTENT_RX:
-        m = rx.search(work)
-        if not m:
+        ms = list(rx.finditer(work))
+        if not ms:
             continue
+        m = ms[0]
+        for extra in ms[1:]:
+            take(extra)
         if _negated(work, m.start()):
             pref = {k: (-v if k != "hue" else v) for k, v in pref.items() if k != "hue"}
             name = "no " + name
@@ -595,11 +629,31 @@ def read_instruction(text: str) -> Instruction:
         ins.pace = 0.0
     ins.on_taps = bool(re.search(r"\b(?:every|each|all|my|the|those|these)\s+(?:of my\s+)?(?:manual\s+|tapped\s+)?"
                                  r"(?:markers?|marks?|taps?|cuts?(?= i (?:made|tapped|put|did))|tapped cuts?)\b", text))
+    m = re.search(r"\bas many (?:characters|people|guys|fighters|heroes|faces)\b|\b(?:lots|lot|bunch|ton|tons|load|loads) of "
+                  r"(?:characters|people|guys|fighters|heroes)\b|\bmany (?:characters|people)\b|\bgroup (?:shot|scene|photo)s?\b|"
+                  r"\bwhole (?:crew|team|squad|cast|gang|group)\b|\beveryone\b|\beverybody\b|\ball (?:of )?the (?:characters|"
+                  r"heroes|fighters|cast)\b|\ball of them\b|\bmultiple characters\b|\bcrowd(?:ed)?\b|\bthe most characters\b", work)
+    if m:
+        ins.prefer["crowd"] = 1.0
+        ins.prefer_names.append("as many characters as possible")
+        take(m)
+    if not ins.hold and not ins.on_taps and re.search(
+            r"\b(?:a|one|single) (?:shot|scene|still|picture|frame)(?: or (?:a |one )?(?:shot|scene|still))? "
+            r"(?:with|of|where|that|showing)\b", text):
+        ins.hold = True  # "a shot with as many characters as possible for the last part"
+        ins.still = "still" in text
+    # Names and things to look for in the shot descriptions ("vegeta", "nappa", "spaceship")
+    left = [w for w in re.findall(r"[a-z][a-z'-]{2,}", FILLER.sub(" ", work)) if w not in QUERY_SKIP]
+    if left:
+        ins.prefer["_query"] = sorted(set(left))[:6]
     ins.people = bool(re.search(r"\b(?:characters?|everyone|everybody|the (?:whole )?(?:crew|team|squad|gang|cast|group)|"
                                 r"group shot|together|all of them|both of them|him|her|them)\b", text))
     ins.frantic = bool(re.search(r"frantic|rapid|flurry|barrage|crazy|insane|nonstop", work))
 
-    ins.understood = bool(ins.on_taps or ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold
+    query = ins.prefer.pop("_query", None)
+    if query and re.search(r"\b(?:show|shows|showing|use|using|put|have|with|featuring|feature|of|starring|where)\b", text):
+        ins.prefer["_query"] = query  # "show nappa in the chorus": looked up in the shot descriptions
+    ins.understood = bool(ins.on_taps or ins.transition or "crowd" in ins.prefer or ins.pace is not None or ins.cut_rate or ins.effects or ins.all_effects or ins.hold
                           or ins.sync or ins.drum_fx or ins.prefer or ins.ramp or ins.velocity or ins.moments
                           or ins.camera)
     # Where it applies
@@ -679,6 +733,8 @@ AMOUNT_WORD = {"none": "no", "less": "fewer", "light": "a few", "more": "more", 
 DRUM_WORD = {"snare": "snare", "kick": "kick", "hits": "drum hit", "big": "big hit", "bar": "bar", "beat": "beat"}
 
 
+TRANSITION_NAMES = {"crossfade": "crossfades", "dissolve": "dissolves", "whip": "whip pans", "zoom": "zoom-throughs",
+                    "white": "dips to white", "black": "dips to black", "circle": "circle wipes", "wipe": "wipes"}
 MOMENT_WORD = {"fade_black": "fade to black", "fade_white": "fade to white", "freeze": "freeze frame",
                "fade_in": "fade in from black"}
 
@@ -704,8 +760,14 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
     d.unclear = []
     if not prompt.strip():
         return d
+    prompt, texts = extract_texts(prompt)
+    for t in texts:
+        d.texts.append(t)
+        where = {-2.0: "at the start", -1.0: "at the end"}.get(t["time"], f"at {_mmss(t['time'])}")
+        notes_early = f"text “{t['text']}” {where} ({t['style']})"
+        d.notes.append(notes_early)
     text = normalise(prompt)
-    notes: list[str] = []
+    notes: list[str] = list(d.notes[-len(texts):]) if texts else []
     st = d.style
     every = list(SECTION_LABELS)
 
@@ -784,6 +846,52 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
     return d
 
 
+QUOTE_RX = re.compile(r'["\u201c\u201d]([^"\u201c\u201d]{1,80})["\u201c\u201d]')
+
+
+def extract_texts(prompt: str) -> tuple[str, list[dict]]:
+    """Quoted words are text to show: 'title "VEGETA - AWAKE"', 'credits "edit by Keeya" at the end',
+    'at 1:20 text "Final Flash"'. Returns the prompt without them, and the text cards."""
+    cards = []
+    out = prompt
+    for m in list(QUOTE_RX.finditer(prompt)):
+        before = prompt[max(0, m.start() - 70):m.start()].lower()
+        after = prompt[m.end():m.end() + 50].lower()
+        around = before + " " + after
+        style = ("credits" if re.search(r"credit|edited by|edit by|made by|by me|outro|thanks for watching", around)
+                 else "lower" if re.search(r"name ?tag|lower third|name (?:on|at) the bottom|label", around)
+                 else "caption" if re.search(r"caption|subtitle|lyric|small text|at the bottom", around)
+                 else "title")
+        after_t = re.sub(r"\bfor (?:about )?\d+(?:\.\d+)? ?(?:s|sec|secs|seconds)\b", " ", after)
+        tm = TIME_RE.search(normalise(after_t)[:30]) or None
+        tb = list(TIME_RE.finditer(normalise(before)))
+        if tb and len(normalise(before)) - tb[-1].end() < 40:
+            at = _secs(tb[-1].group(1))
+        elif tm:
+            at = _secs(tm.group(1))
+        elif re.search(r"\b(?:end|ending|outro|last|finish|credits)\b", around):
+            at = -1.0
+        else:
+            at = -2.0  # the start
+        dm = re.search(r"\bfor (\d+(?:\.\d+)?) ?(?:s|sec|secs|seconds)\b", after)
+        dur = float(dm.group(1)) if dm else {"title": 3.0, "credits": 4.0, "caption": 2.5, "lower": 3.0}[style]
+        cards.append({"text": m.group(1).strip(), "time": at, "duration": dur, "style": style})
+        # take the quote and the words that introduced it out of the prompt
+        lead = re.search(r"(?:(?:add|put|show|with|and|then|a|an|the|big|small)\s+)*(?:title(?: card)?|text|caption|"
+                         r"subtitle|credits?|name ?tag|words?|lower third|card)?\s*(?:saying|that says|reading|of|:|=)?\s*$",
+                         prompt[:m.start()], re.I)
+        a = lead.start() if lead else m.start()
+        tail = re.match(r"(?:\s*,?\s*(?:(?:at|in|on|during)\s+(?:the\s+)?(?:very\s+)?(?:end|ending|start|beginning|outro|"
+                        r"intro|opening)(?: of the (?:song|edit|video))?|at\s+\d{1,2}:\d{2}(?:\.\d)?|for (?:about )?"
+                        r"\d+(?:\.\d+)? ?(?:s|sec|secs|seconds)))+", prompt[m.end():], re.I)
+        b = m.end() + (tail.end() if tail else 0)
+        lead_time = re.search(r"\b(?:at|around)\s+\d{1,2}:\d{2}(?:\.\d)?\s*,?\s*$", prompt[:a], re.I)
+        if lead_time:
+            a = lead_time.start()
+        out = out.replace(prompt[a:b], " ", 1)
+    return out, cards
+
+
 def _meaningful(text: str) -> bool:
     rest = FILLER.sub(" ", re.sub(r"[^a-z' ]", " ", text))
     words = [w for w in rest.split() if len(w) > 2]
@@ -831,9 +939,11 @@ def _apply_hint(d: Direction, hint: str) -> None:
     elif hint == "transitions":
         st.blur_into_sections = True
         st.white_into_drop = True
+        d.transitions.setdefault("@sections", "mix")
     elif hint == "hard_cuts":
         st.blur_into_sections = False
         st.white_into_drop = False
+        d.transitions.clear()
     elif hint == "epic":
         st.freeze_before_drop = True
         st.white_into_drop = True
@@ -903,7 +1013,10 @@ def _apply_scoped(d: Direction, ins: Instruction, labels: list[str], notes: list
     if ins.prefer:
         for lab in (labels if prefix else ["all"]):
             d.prefer.setdefault(lab, {}).update(ins.prefer)
-        said.append(", ".join(ins.prefer_names))
+        names = list(ins.prefer_names)
+        if ins.prefer.get("_query") and (names or ins.understood):
+            names.append("shots of " + " / ".join(ins.prefer["_query"]))
+        said.append(", ".join(n for n in names if n))
     if ins.sync:
         for lab in (labels if prefix else ["all"]):
             d.sync[lab] = ins.sync
@@ -917,6 +1030,17 @@ def _apply_scoped(d: Direction, ins: Instruction, labels: list[str], notes: list
             if lab not in d.ramp:
                 d.ramp.append(lab)
         said.append("cuts speed up toward the drop" if not prefix else "cuts speed up")
+    if ins.transition == "none":
+        if prefix:
+            for lab in labels:
+                d.transitions.pop(lab, None)
+        else:
+            d.transitions.clear()
+        said.append("no transitions (hard cuts)")
+    elif ins.transition:
+        for lab in (labels if prefix else ["all"]):
+            d.transitions[lab] = ins.transition
+        said.append(f"{TRANSITION_NAMES[ins.transition]} between cuts")
     if ins.velocity:
         for lab in (labels if prefix else ["build", "drop"]):
             if lab not in d.velocity:
@@ -1010,6 +1134,7 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
         sd.ramp = True
         sd.cut_every = sd.cut_every or 2.0
     sd.velocity = ins.velocity
+    sd.transition = ins.transition if ins.transition != "none" else None
     if ins.prefer.get("motion", 0) > 0 and not sd.hold:
         sd.energy = 1.0
     elif ins.prefer.get("motion", 0) < 0:
@@ -1054,10 +1179,16 @@ def _add_section(d: Direction, ins: Instruction, notes: list[str], window: tuple
     extras = []
     if ins.prefer_names:
         extras.append(", ".join(ins.prefer_names))
+    if ins.prefer.get("_query"):
+        extras.append("shots of " + " / ".join(ins.prefer["_query"]))
     extras += [x for x in _effects_note(ins.effects) if x]
     extras += [f"{EFFECT_LABEL.get(e, e)} on every {DRUM_WORD.get(k, k)}" for e, k in ins.drum_fx.items()]
     if sd.velocity:
         extras.append("velocity edit")
+    if sd.transition:
+        extras.append(TRANSITION_NAMES[sd.transition])
+    elif ins.transition == "none":
+        extras.append("hard cuts")
     if what == "action" and "action shots" in extras:
         what = ""
     sd.what = ", ".join(x for x in [what] + extras if x)
@@ -1112,7 +1243,7 @@ def region_direction(text: str, start: float, end: float) -> tuple[SectionDirect
     ins.times, ins.cue, ins.span, ins.occurrence = [], None, None, None
     moments, ins.moments = list(ins.moments), []  # freeze / fades happen at the edges of the selection
     others = (ins.pace is not None or ins.cut_rate is not None or ins.effects or ins.all_effects or ins.hold or ins.sync
-              or ins.drum_fx or ins.prefer or ins.ramp or ins.velocity or ins.camera)
+              or ins.drum_fx or ins.prefer or ins.ramp or ins.velocity or ins.camera or ins.transition)
     if others:
         _add_section(probe, ins, notes, window=(start, end))
     if not probe.sections:
@@ -1133,8 +1264,6 @@ def region_direction(text: str, start: float, end: float) -> tuple[SectionDirect
             sd.prefer["camera_" + ins.camera] = 1.0
         if ins.on_taps:
             sd.what = (sd.what + " " if sd.what else "") + "on your cuts here"
-    if ins.people and sd.hold:
-        sd.what = (sd.what or "hold one shot") + " (tip: use Pick shot… to choose exactly who is on screen)"
     if moments and sd.what:
         sd.what += ", " + ", ".join(MOMENT_WORD.get(a, a) for a in moments)
     elif moments:

@@ -18,6 +18,8 @@ EFFECT_KINDS = (
     "blur_in",      # blurred frames easing into focus
     "fade_white",   # fade from white at the start of the cut
     "fade_black",   # fade to black at the end of the cut
+    "fade_in",      # fade in from black
+    "text",         # a text card: color = "<png file name>|in|out|both" (fades), intensity = fade seconds
 )
 
 
@@ -44,6 +46,9 @@ class Cut:
     section: str = ""
     crop: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)  # remove baked-in black bars
     focus: tuple[float, float] = (0.5, 0.5)   # where the action is (0..1): crops follow it
+    # Transition from the previous cut: its shot keeps playing under this one and blends out.
+    # {"kind": xfade name, "frames": n, "source", "src_start", "speed", "freeze", "crop", "focus"}
+    transition: dict | None = None
 
     @property
     def frames(self) -> int:

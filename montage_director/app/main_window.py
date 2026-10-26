@@ -112,8 +112,10 @@ class SettingsDialog(QDialog):
         super().accept()
 
 
-TAP_KEYS = {Qt.Key_Space: "cut", Qt.Key_F: "flash", Qt.Key_Z: "zoom", Qt.Key_X: "shake", Qt.Key_D: "drop"}
-TAP_HELP = "Tapping: Space = cut · F = flash · Z = zoom · X = shake · D = drop · Backspace = undo"
+TAP_KEYS = {Qt.Key_Space: "cut", Qt.Key_F: "flash", Qt.Key_Z: "zoom", Qt.Key_X: "shake", Qt.Key_D: "drop",
+            **{getattr(Qt, f"Key_{k}"): f"scene{k}" for k in "123456789"}}
+TAP_HELP = ("Tapping: Space = cut · 1-9 = cut to a scene key · F = flash · Z = zoom · X = shake · D = drop · "
+            "Backspace = undo")
 
 
 IDEAS = [
@@ -141,6 +143,12 @@ dark / bright scenes, colours (blue, red, gold...), panning shots, "hold one sho
 "at 1:20", "1 minute 30", "from 0:30 to 0:45", "until 0:11", "the last 20 seconds", "halfway through";
 musical moments it hears: "when the bass drops", "when the drums get faster", "when the solo starts",
 "the hard hits", "when the vocals come in", "before the drop", "when the last note rings".<br><br>
+<b>Transitions:</b> crossfades, dissolves, whip pans, zoom transitions, dips to white / black, wipes;
+"lots of transitions", "jump cuts" (none).<br><br>
+<b>Text:</b> put words in quotes: title "VEGETA - AWAKE", credits "edit by me" at the end,
+at 1:20 caption "Final Flash". Or Tools → Text cards.<br><br>
+<b>Who is in the shot:</b> after <i>Describe my shots</i> (once per video), names like "Nappa" and
+"a shot with as many characters as possible" work too.<br><br>
 <b>Look and shape:</b> black and white, VHS, Y2K, film / trailer, sad, dreamy, glow, ghost trails, letterbox,
 vertical / TikTok, square; "no repeats".<br><br>
 The free director picks shots by how they look and move (action, calm, dark, bright, colour), not by who
@@ -151,36 +159,58 @@ understands any wording."""
 
 
 class ShotPicker(QDialog):
-    """Choose shots from the footage, by thumbnail: one to hold, or several for the cuts in that part."""
+    """Your shots as thumbnails. Pick one to hold, Ctrl+click several for the cuts in a part, or just
+    browse: search the AI descriptions, and right-click to mark ★ favourites or ✕ never use."""
 
-    def __init__(self, parent, footage, seconds: float):
+    def __init__(self, parent, project, seconds: float | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Pick a shot")
-        self.resize(980, 640)
+        self.project = project
+        self.footage = project.footage
+        self.tags = project.shot_tags or {}
+        self.browse = seconds is None
+        self.setWindowTitle("Your shots" if self.browse else "Pick a shot")
+        self.resize(1000, 680)
         self.chosen = None
-        self.footage = footage
+        self.marks_changed = False
         v = QVBoxLayout(self)
         top = QHBoxLayout()
-        top.addWidget(QLabel(f"Click one shot to hold it for this {seconds:.1f} s part, or Ctrl+click several "
-                             "to use them in that order on the cuts here."))
-        top.addStretch()
-        top.addWidget(QLabel("Show:"))
+        if self.browse:
+            msg = "Right-click a shot to mark it ★ favourite (used more, at the big moments) or ✕ never use."
+        else:
+            msg = (f"Click one shot to hold it for this {seconds:.1f} s part, or Ctrl+click several to use them in "
+                   "that order on the cuts here. Right-click to mark ★ / ✕.")
+        lab = QLabel(msg)
+        lab.setWordWrap(True)
+        top.addWidget(lab, 1)
+        v.addLayout(top)
+        row = QHBoxLayout()
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search what's in the shots (needs Describe my shots), e.g. \"nappa\", "
+                                       "\"team\", \"explosion\"" if not self.tags else
+                                       "Search what's in the shots, e.g. \"nappa\", \"team\", \"explosion\"")
+        self.search.textChanged.connect(self._fill)
+        row.addWidget(self.search, 1)
+        row.addWidget(QLabel("Show:"))
         self.order = QComboBox()
-        for key, label in (("time", "In footage order"), ("calm", "Calmest first"), ("action", "Most action first"),
-                           ("long", "Longest first")):
+        for key, label in (("time", "In footage order"), ("people", "Most characters first"),
+                           ("calm", "Calmest first"), ("action", "Most action first"), ("long", "Longest first"),
+                           ("marked", "★ favourites first")):
             self.order.addItem(label, key)
         self.order.currentIndexChanged.connect(self._fill)
-        top.addWidget(self.order)
-        v.addLayout(top)
+        row.addWidget(self.order)
+        v.addLayout(row)
         self.grid = QListWidget()
         self.grid.setViewMode(QListView.IconMode)
         self.grid.setIconSize(QSize(208, 117))
-        self.grid.setGridSize(QSize(224, 150))
+        self.grid.setGridSize(QSize(224, 156))
         self.grid.setResizeMode(QListView.Adjust)
         self.grid.setMovement(QListView.Static)
         self.grid.setUniformItemSizes(True)
-        self.grid.setSelectionMode(QListWidget.ExtendedSelection)
-        self.grid.itemDoubleClicked.connect(lambda _: self.accept())
+        self.grid.setSelectionMode(QListWidget.SingleSelection if self.browse else QListWidget.ExtendedSelection)
+        self.grid.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.grid.customContextMenuRequested.connect(self._mark_menu)
+        if not self.browse:
+            self.grid.itemDoubleClicked.connect(lambda _: self.accept())
         self.picked: list[int] = []  # in the order they were clicked
         self.grid.itemSelectionChanged.connect(self._selection_changed)
         v.addWidget(self.grid, 1)
@@ -188,18 +218,33 @@ class ShotPicker(QDialog):
         self.count.setObjectName("Muted")
         v.addWidget(self.count)
         self.freeze = QCheckBox("Freeze on this frame (a still picture instead of the moving clip)")
-        self.freeze.setChecked(seconds > 4.0)
+        self.freeze.setChecked(bool(seconds and seconds > 4.0))
+        self.freeze.setVisible(not self.browse)
         v.addWidget(self.freeze)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.ok = buttons.button(QDialogButtonBox.Ok)
-        self.ok.setText("Use this shot")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
+        if self.browse:
+            buttons = QDialogButtonBox(QDialogButtonBox.Close)
+            buttons.rejected.connect(self.reject)
+            self.ok = QPushButton()
+        else:
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            self.ok = buttons.button(QDialogButtonBox.Ok)
+            self.ok.setText("Use this shot")
+            buttons.accepted.connect(self.accept)
+            buttons.rejected.connect(self.reject)
         v.addWidget(buttons)
         self._fill()
 
+    def _mark(self, shot_id: int) -> str:
+        key = self.project.shot_key(shot_id)
+        return "★ " if key in self.project.favorites else ("✕ " if key in self.project.banned else "")
+
     def _fill(self):
         shots = [s for s in self.footage.shots if s.usable]
+        q = self.search.text().strip().lower()
+        if q:
+            words = q.split()
+            shots = [s for s in shots if all(w in (self.tags.get(s.id, {}).get("desc", "") + " " +
+                                                   self.tags.get(s.id, {}).get("kind", "")).lower() for w in words)]
         key = self.order.currentData()
         if key == "calm":
             shots.sort(key=lambda s: s.motion)
@@ -207,27 +252,61 @@ class ShotPicker(QDialog):
             shots.sort(key=lambda s: -s.motion)
         elif key == "long":
             shots.sort(key=lambda s: -(s.end - s.start))
+        elif key == "people":
+            shots.sort(key=lambda s: -int(self.tags.get(s.id, {}).get("people") or 0))
+        elif key == "marked":
+            shots.sort(key=lambda s: {"★ ": 0, "": 1, "✕ ": 2}[self._mark(s.id)])
         self.grid.clear()
         names = len(self.footage.sources) > 1
         for s in shots:
-            src = Path(self.footage.sources[s.source].path).stem[:14] + " " if names else ""
-            item = QListWidgetItem(f"{src}{_mmss(s.start)} · {s.end - s.start:.1f}s")
+            src = Path(self.footage.sources[s.source].path).stem[:12] + " " if names else ""
+            tag = self.tags.get(s.id, {})
+            people = f" · {tag['people']}👤" if tag.get("people") else ""
+            item = QListWidgetItem(f"{self._mark(s.id)}{src}{_mmss(s.start)} · {s.end - s.start:.1f}s{people}")
             pix = QPixmap(s.thumb) if s.thumb and Path(s.thumb).is_file() else QPixmap()
             if not pix.isNull():
                 item.setIcon(QIcon(pix.scaled(208, 117, Qt.KeepAspectRatio, Qt.SmoothTransformation)))
+            if tag.get("desc"):
+                item.setToolTip(tag["desc"])
             item.setData(Qt.UserRole, s.id)
             self.grid.addItem(item)
+        if q and not shots:
+            self.count.setText("No shots match." + ("" if self.tags else " Searching needs Describe my shots (in the "
+                                                                           "Footage section) first."))
+
+    def _mark_menu(self, pos):
+        item = self.grid.itemAt(pos)
+        if item is None:
+            return
+        sid = int(item.data(Qt.UserRole))
+        menu = QMenu(self)
+        fav = menu.addAction("★ Favourite (use it more, at the big moments)")
+        ban = menu.addAction("✕ Never use this shot")
+        clear = menu.addAction("Clear the mark") if self._mark(sid) else None
+        chosen = menu.exec(self.grid.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        self.project.mark_shot(sid, "favorite" if chosen is fav else "banned" if chosen is ban else None)
+        self.marks_changed = True
+        self._fill()
 
     def _selection_changed(self):
         now = [int(i.data(Qt.UserRole)) for i in self.grid.selectedItems()]
         self.picked = [i for i in self.picked if i in now] + [i for i in now if i not in self.picked]
+        if self.browse:
+            tag = self.tags.get(now[0], {}) if now else {}
+            self.count.setText(tag.get("desc", ""))
+            return
         many = len(self.picked) > 1
         self.freeze.setEnabled(not many)
         self.ok.setText(f"Use these {len(self.picked)} shots" if many else "Use this shot")
         self.count.setText(f"{len(self.picked)} shots picked: they play in the order you clicked them, one per cut "
-                           "(your taps stay where they are)." if many else "")
+                           "(your taps stay where they are)." if many else
+                           self.tags.get(self.picked[0], {}).get("desc", "") if self.picked else "")
 
     def accept(self):
+        if self.browse:
+            return super().accept()
         if not self.picked:
             item = self.grid.currentItem()
             if item is None:
@@ -235,6 +314,139 @@ class ShotPicker(QDialog):
             self.picked = [int(item.data(Qt.UserRole))]
         self.chosen = list(self.picked)
         super().accept()
+
+
+class InstructionDialog(QDialog):
+    """Right-click > Insert instruction here: say what should happen from this point."""
+
+    def __init__(self, parent, t: float, choices: list[tuple[str, float, float]], default: int = 0):
+        super().__init__(parent)
+        self.setWindowTitle(f"Instruction at {_mmss(t)}")
+        self.resize(560, 300)
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("What should happen here?"))
+        self.text = QPlainTextEdit()
+        self.text.setPlaceholderText("e.g. \"a shot with as many characters as possible\", \"quick cuts with punches\", "
+                                     "\"hold one shot\", \"crossfades\", \"flash on every snare\", "
+                                     "\"freeze\", text \"THE END\"")
+        v.addWidget(self.text, 1)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("For:"))
+        self.scope = QComboBox()
+        for label, a, b in choices:
+            self.scope.addItem(label, (a, b))
+        self.scope.setCurrentIndex(default)
+        row.addWidget(self.scope, 1)
+        v.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Apply")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+        self.text.setFocus()
+
+
+class TextCards(QDialog):
+    """Titles, captions and credits."""
+
+    def __init__(self, parent, texts: list[dict], length: float, start: float):
+        super().__init__(parent)
+        from ..titles import STYLE_NAMES
+
+        self.setWindowTitle("Text cards")
+        self.resize(640, 420)
+        self.texts = [dict(t) for t in texts]
+        self.length, self.start = length, start
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("Titles, captions and credits drawn over the video (classic AMV style)."))
+        self.list = QListWidget()
+        v.addWidget(self.list, 1)
+        form = QFormLayout()
+        self.text = QLineEdit()
+        self.text.setPlaceholderText("e.g. VEGETA - AWAKE")
+        self.style = QComboBox()
+        for key, name in STYLE_NAMES.items():
+            self.style.addItem(name, key)
+        self.when = QLineEdit()
+        self.when.setPlaceholderText("start, end, or a time like 1:20")
+        self.seconds = QLineEdit("3")
+        form.addRow("Text", self.text)
+        form.addRow("Style", self.style)
+        form.addRow("When", self.when)
+        form.addRow("Seconds on screen", self.seconds)
+        v.addLayout(form)
+        row = QHBoxLayout()
+        add = QPushButton("Add")
+        add.clicked.connect(self._add)
+        rem = QPushButton("Remove selected")
+        rem.clicked.connect(self._remove)
+        row.addWidget(add)
+        row.addWidget(rem)
+        row.addStretch()
+        v.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+        self._refresh()
+
+    def _refresh(self):
+        self.list.clear()
+        for t in self.texts:
+            when = {-2.0: "start", -1.0: "end"}.get(float(t.get("time", -2)), _mmss(float(t.get("time", 0))))
+            self.list.addItem(f"“{t['text']}” · {t.get('style', 'title')} · {when} · {t.get('duration', 3):g}s")
+
+    def _add(self):
+        text = self.text.text().strip()
+        if not text:
+            return
+        w = self.when.text().strip().lower()
+        at = -2.0 if w in ("", "start", "beginning") else -1.0 if w in ("end", "ending") else _parse_time(w)
+        if at is None:
+            QMessageBox.warning(self, APP_NAME, "Write the time as start, end, or minutes:seconds like 1:20.")
+            return
+        try:
+            secs = max(0.5, float(self.seconds.text() or 3))
+        except ValueError:
+            secs = 3.0
+        self.texts.append({"text": text, "style": self.style.currentData(), "time": at, "duration": secs})
+        self.text.clear()
+        self._refresh()
+
+    def _remove(self):
+        row = self.list.currentRow()
+        if 0 <= row < len(self.texts):
+            del self.texts[row]
+            self._refresh()
+
+
+class SceneKeys(QDialog):
+    """What keys 1-9 put on a tapped cut."""
+
+    def __init__(self, parent, keys: dict[str, str]):
+        super().__init__(parent)
+        from ..project import SCENE_PRESETS
+
+        self.setWindowTitle("Scene keys")
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("While tapping, press a number to cut to that kind of shot:"))
+        form = QFormLayout()
+        self.combos = {}
+        for k in "123456789":
+            c = QComboBox()
+            for pid, (label, _) in SCENE_PRESETS.items():
+                c.addItem(label, pid)
+            c.setCurrentIndex(max(0, c.findData(keys.get(k, "any"))))
+            form.addRow(f"Key {k}", c)
+            self.combos[k] = c
+        v.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        v.addWidget(buttons)
+
+    def keys(self) -> dict[str, str]:
+        return {k: c.currentData() for k, c in self.combos.items()}
 
 
 class TapFilter(QObject):
@@ -265,7 +477,7 @@ class MainWindow(QMainWindow):
         self.resize(1360, 860)
         self.setMinimumSize(QSize(1060, 680))
         self.saved = store.load()
-        self.project = Project()
+        self.project = self._fresh_project()
         self.thread = None
         self.job = None
         self.busy_kind = ""
@@ -280,6 +492,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_main(), 1)
         self._build_menus()
         self._restore()
+        self.autosave = QTimer(self)
+        self.autosave.timeout.connect(self._autosave)
+        self.autosave.start(120_000)
+        QTimer.singleShot(400, self._offer_recovery)
         self._update_director_info()
         self._set_busy(False)
         QTimer.singleShot(3000, self.check_for_updates)
@@ -327,6 +543,15 @@ class MainWindow(QMainWindow):
         edit.addAction(act("Compare before / after", lambda: self.compare_btn.isEnabled() and self.compare_btn.toggle(),
                            ["C"]))
         edit.addAction(act("Settings...", self.open_settings))
+        tools = self.menuBar().addMenu("&Tools")
+        self.shots_action = act("Your shots (★ favourites / ✕ never use)...", self.browse_shots, [], "Browse and mark your shots")
+        self.text_action = act("Text cards (titles, credits)...", self.edit_texts, ["Ctrl+T"], "Add titles, captions or credits")
+        tools.addAction(self.shots_action)
+        tools.addAction(self.text_action)
+        tools.addAction(act("Describe my shots (AI, about a cent)...", self.describe_shots))
+        tools.addAction(act("Scene keys for tapping...", self.edit_scene_keys))
+        self.shots_action.setIconText("Shots")
+        self.text_action.setIconText("Text")
         help_menu = self.menuBar().addMenu("&Help")
         help_menu.addAction(act("What can I say? (prompt guide)", self.show_prompt_help, ["F1"]))
         help_menu.addAction(act("How to make an edit (online guide)", lambda: QDesktopServices.openUrl(
@@ -352,6 +577,9 @@ class MainWindow(QMainWindow):
         bar.addSeparator()
         bar.addAction(self.undo_action)
         bar.addAction(self.redo_action)
+        bar.addSeparator()
+        bar.addAction(self.shots_action)
+        bar.addAction(self.text_action)
         bar.addSeparator()
         bar.addAction(self.export_action)
         spacer = QWidget()
@@ -410,6 +638,41 @@ class MainWindow(QMainWindow):
             return
         self.load_project(path)
 
+    @staticmethod
+    def _fresh_project() -> Project:
+        from ..project import DEFAULT_SCENE_KEYS, SCENE_PRESETS
+
+        proj = Project()
+        saved = store.load().get("scene_keys") or {}
+        proj.scene_keys = {**DEFAULT_SCENE_KEYS, **{k: v for k, v in saved.items() if v in SCENE_PRESETS}}
+        return proj
+
+    # ----- autosave / crash recovery --------------------------------------------- #
+    @staticmethod
+    def _recovery_path() -> Path:
+        return data_dir() / "recovery.mdproj"
+
+    def _autosave(self):
+        if self.dirty and self.project.plan is not None and self.job is None:
+            try:
+                self.project.save_copy(self._recovery_path())
+            except OSError as exc:
+                log.warning("Autosave failed: %s", exc)
+
+    def _offer_recovery(self):
+        path = self._recovery_path()
+        if not path.is_file():
+            return
+        box = QMessageBox(QMessageBox.Question, APP_NAME,
+                          "Montage Director closed before your last edit was saved. Bring it back?", parent=self)
+        restore = box.addButton("Restore my edit", QMessageBox.AcceptRole)
+        box.addButton("Discard it", QMessageBox.DestructiveRole)
+        box.exec()
+        if box.clickedButton() is restore:
+            self.load_project(path, recovered=True)
+        else:
+            path.unlink(missing_ok=True)
+
     def ask_new_project(self):
         if self.job is not None or not self.maybe_save():
             return
@@ -467,6 +730,19 @@ class MainWindow(QMainWindow):
         self.footage_info = QLabel("")
         self.footage_info.setObjectName("Muted")
         v.addWidget(self.footage_info)
+        row = QHBoxLayout()
+        self.describe_btn = QPushButton("Describe my shots (AI)…")
+        self.describe_btn.setToolTip("Claude looks at every shot once (who is in it, what happens, how many characters) "
+                                     "so the free director can find shots by name or pick the one with the most "
+                                     "characters. Uses your API key with the cheapest model: about a cent per video, "
+                                     "saved so it never runs twice.")
+        self.describe_btn.clicked.connect(self.describe_shots)
+        row.addWidget(self.describe_btn)
+        shots_btn = QPushButton("Your shots…")
+        shots_btn.setToolTip("Browse your shots, search them, mark ★ favourites or ✕ never use")
+        shots_btn.clicked.connect(self.browse_shots)
+        row.addWidget(shots_btn)
+        v.addLayout(row)
         self.footage_list.changed.connect(self._inputs_changed)
 
         v.addSpacing(6)
@@ -602,6 +878,10 @@ class MainWindow(QMainWindow):
                                 "D = drop, Backspace = undo. Your taps snap to the nearest drum hit.")
         self.tap_btn.clicked.connect(self.toggle_tapping)
         controls.addWidget(self.tap_btn)
+        self.half_speed = QCheckBox("½ speed")
+        self.half_speed.setToolTip("Tap along at half speed: easier to catch fast drum fills. Your taps still land "
+                                   "in the right place at full speed.")
+        controls.addWidget(self.half_speed)
         self.compare_btn = QPushButton("Before / After")
         self.compare_btn.setCheckable(True)
         self.compare_btn.setToolTip("Flip between this preview and the one before your last change, "
@@ -620,6 +900,8 @@ class MainWindow(QMainWindow):
         self.timeline.region_removed.connect(self.region_removed)
         self.timeline.taps_cleared.connect(self.clear_taps)
         self.timeline.taps_removed.connect(self.remove_taps)
+        self.timeline.tap_moved.connect(self.move_tap)
+        self.timeline.instruction_requested.connect(self.insert_instruction)
         self.tapping = False
         self.tap_filter = TapFilter(self)
         v.addWidget(self.timeline)
@@ -762,6 +1044,7 @@ class MainWindow(QMainWindow):
         if not self.maybe_save():
             e.ignore()
             return
+        self._recovery_path().unlink(missing_ok=True)  # closed properly: nothing to recover
         if self.job is not None:
             self.stop()
         self._persist()
@@ -949,14 +1232,148 @@ class MainWindow(QMainWindow):
         if not region or proj.footage is None or self.job is not None:
             return
         a, b = region
-        dlg = ShotPicker(self, proj.footage, b - a)
+        before = proj.snapshot()
+        dlg = ShotPicker(self, proj, b - a)
         if dlg.exec() != QDialog.Accepted or dlg.chosen is None:
+            if dlg.marks_changed:
+                self._marks_changed(before)
             return
-        proj.checkpoint()
+        proj.history.append(before)
+        proj.future.clear()
         proj.pick_region_shot(a, b, dlg.chosen, dlg.freeze.isChecked() and len(dlg.chosen) == 1)
         self.timeline.clear_selection()
         what = "your shot" if len(dlg.chosen) == 1 else f"your {len(dlg.chosen)} shots"
         self._replan(f"Putting {what} in {_mmss(a)}–{_mmss(b)}...")
+
+    def _marks_changed(self, before: dict):
+        proj = self.project
+        proj.history.append(before)
+        proj.future.clear()
+        if proj.plan is not None:
+            self._replan("Updating your ★ / ✕ shots...")
+
+    def browse_shots(self):
+        proj = self.project
+        if proj.footage is None:
+            QMessageBox.information(self, APP_NAME, "Make an edit first, so the app has looked at your footage.")
+            return
+        if self.job is not None:
+            return
+        before = proj.snapshot()
+        dlg = ShotPicker(self, proj)
+        dlg.exec()
+        if dlg.marks_changed:
+            self._marks_changed(before)
+
+    def describe_shots(self):
+        proj = self.project
+        if self.job is not None:
+            return
+        if proj.footage is None:
+            QMessageBox.information(self, APP_NAME, "Press Make Edit first (the app needs to look at your footage once), "
+                                    "then Describe my shots.")
+            return
+        key = store.get_api_key()
+        if not key:
+            QMessageBox.information(self, APP_NAME, "Describing your shots uses Claude, so it needs your Anthropic API "
+                                    "key (Settings). The rest of the app stays free.")
+            self.open_settings()
+            return
+        from ..director_ai import describe_cost
+
+        todo, cost = describe_cost(proj.footage)
+        if todo == 0:
+            QMessageBox.information(self, APP_NAME, "Your shots are already described.")
+            return
+        box = QMessageBox(QMessageBox.Question, APP_NAME,
+                          f"Claude (Haiku, the cheapest model) will look at {todo} shots once and note who is in "
+                          f"each, what happens and how many characters there are. Estimated cost: about "
+                          f"${max(cost, 0.01):.2f}. It's saved, so this video never needs it again.", parent=self)
+        go = box.addButton("Describe my shots", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        proj.settings.api_key = key
+
+        def work(cancel, progress):
+            n = proj.describe_shots(cancel, progress)
+            if proj.plan is not None:
+                progress(0.9, "Re-planning with the shot descriptions...")
+                proj.make_plan()
+                proj.render_preview(cancel, lambda f, m: progress(0.9 + 0.1 * f, m))
+            return n
+
+        def done(n):
+            self.status.setText(f"Described {n} shots. You can now ask for characters by name or "
+                                "\"as many characters as possible\".")
+            if proj.plan is not None:
+                self._show_result()
+
+        self._run("refine", work, done)
+
+    def edit_texts(self):
+        proj = self.project
+        length = proj.plan.duration if proj.plan else 0.0
+        dlg = TextCards(self, proj.texts, length, proj.plan.song_start if proj.plan else 0.0)
+        if dlg.exec() != QDialog.Accepted or dlg.texts == proj.texts:
+            return
+        proj.checkpoint()
+        proj.texts = dlg.texts
+        if proj.plan is not None:
+            self._replan("Adding your text...")
+        else:
+            self._set_dirty(True)
+
+    def edit_scene_keys(self):
+        dlg = SceneKeys(self, self.project.scene_keys)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self.project.scene_keys = dlg.keys()
+        store.save({**store.load(), "scene_keys": self.project.scene_keys})
+        if self.project.plan is not None and any(k.startswith("scene") for _, k in self.project.taps):
+            self.project.checkpoint()
+            self.project.apply_taps()
+            self._replan("Updating your scene taps...")
+
+    def move_tap(self, old: float, new: float, exact: bool):
+        if self.job is not None or self.tapping:
+            return
+        self.project.checkpoint()
+        if not self.project.move_tap(old, new, exact):
+            self.project.history.pop()
+            return
+        self.timeline.set_taps(self.project.taps)
+        self._replan("Moving your tap" + (" (exactly where you put it)..." if exact else "..."))
+
+    def insert_instruction(self, t: float):
+        proj = self.project
+        if proj.plan is None or self.job is not None:
+            QMessageBox.information(self, APP_NAME, "Make an edit first.")
+            return
+        plan, song = proj.plan, proj.song
+        S, E = plan.song_start, plan.song_start + plan.duration
+        beat = 60.0 / song.tempo if song.tempo else 0.5
+        sec = song.section_at(t)
+        choices = []
+        sel = self.timeline.selection
+        if sel and sel[1] - sel[0] >= 0.4:
+            choices.append((f"The selected part ({_mmss(sel[0])}–{_mmss(sel[1])})", sel[0], sel[1]))
+        a_sec, b_sec = max(S, sec.start), min(E, sec.end)
+        choices.append((f"This part of the song: {sec.label} ({_mmss(a_sec)}–{_mmss(b_sec)})", a_sec, b_sec))
+        choices.append((f"From here to the end ({_mmss(t)}–{_mmss(E)})", t, E))
+        choices.append((f"The next 4 bars ({_mmss(t)}–{_mmss(min(E, t + 16 * beat))})", t, min(E, t + 16 * beat)))
+        choices.append(("Just this moment (a flash, a freeze, a text...)", t, min(E, t + beat)))
+        here = 1 if sel else 0  # index of "This part of the song"
+        default = 0 if sel else (here + 1 if t >= S + 0.85 * (E - S) else here)
+        dlg = InstructionDialog(self, t, choices, default)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        text = dlg.text.toPlainText().strip()
+        if not text:
+            return
+        a, b = dlg.scope.currentData()
+        self.refine_part(text, a, b)
 
     # ------------------------------------------------------------ tap to direct
     def toggle_tapping(self):
@@ -976,6 +1393,8 @@ class MainWindow(QMainWindow):
         self.tap_btn.setStyleSheet(f"background: {theme.HOT}; color: white; border: none; font-weight: 700;")
         self.status.setText(TAP_HELP)
         self.setFocus()
+        self.tap_rate = 0.5 if self.half_speed.isChecked() else 1.0
+        self.player.setPlaybackRate(self.tap_rate)
         self.player.play()
 
     def stop_tapping(self, apply: bool):
@@ -985,6 +1404,7 @@ class MainWindow(QMainWindow):
         self.tap_btn.setStyleSheet("")
         if self.player:
             self.player.pause()
+            self.player.setPlaybackRate(1.0)
         if not apply:
             self.project.taps = self._taps_before
             self.timeline.set_taps(self.project.taps)
@@ -1009,10 +1429,12 @@ class MainWindow(QMainWindow):
         else:
             plan = self.project.plan
             # what you hear now, minus a typical reaction delay
-            t = plan.song_start + max(0.0, self.player.position() / 1000.0 - 0.06)
+            # (at half speed, the same reaction time is half as much song)
+            t = plan.song_start + max(0.0, self.player.position() / 1000.0 - 0.06 * getattr(self, "tap_rate", 1.0))
             taps.append((round(t, 3), TAP_KEYS[key]))  # kept in pressing order, so Backspace undoes the last press
         self.timeline.set_taps(taps)
-        counts = {k: sum(1 for _, kind in taps if kind == k) for k in ("cut", "flash", "zoom", "shake", "drop")}
+        counts = {k: sum(1 for _, kind in taps if kind == k or (k == "scene" and kind.startswith("scene")))
+                  for k in ("cut", "scene", "flash", "zoom", "shake", "drop")}
         summary = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in counts.items() if n)
         self.status.setText(f"{TAP_HELP}   [{summary or 'no taps yet'}]")
 
@@ -1069,26 +1491,12 @@ class MainWindow(QMainWindow):
         text = self.refine_edit.text().strip()
         if not text or self.project.plan is None:
             return
-        proj = self.project
-        proj.checkpoint()
         region = getattr(self, "region", None)
         if region:
-            a, b = region
-
-            def work_region(cancel, progress):
-                progress(0.05, f"Refining {_mmss(a)}–{_mmss(b)}...")
-                notes = proj.refine_region(text, a, b)
-                proj.make_plan()
-                proj.render_preview(cancel, lambda f, m: progress(0.15 + 0.85 * f, m))
-                return notes
-
-            def done_region(notes):
-                self.refine_edit.clear()
-                self.timeline.clear_selection()
-                self._show_result()
-
-            self._run("refine", work_region, done_region)
+            self.refine_part(text, *region)
             return
+        proj = self.project
+        proj.checkpoint()
 
         def work(cancel, progress):
             progress(0.05, "Refining with Claude..." if proj.settings.use_ai else "Applying your changes...")
@@ -1098,6 +1506,26 @@ class MainWindow(QMainWindow):
             return True
 
         self._run("refine", work, lambda _: (self.refine_edit.clear(), self._show_result()))
+
+    def refine_part(self, text: str, a: float, b: float):
+        """Change one part of the song (a selection, or Insert instruction here)."""
+        proj = self.project
+        proj.checkpoint()
+
+        def work_region(cancel, progress):
+            progress(0.05, f"Refining {_mmss(a)}–{_mmss(b)}...")
+            notes = proj.refine_region(text, a, b)
+            proj.make_plan()
+            proj.render_preview(cancel, lambda f, m: progress(0.15 + 0.85 * f, m))
+            return notes
+
+        def done_region(notes):
+            self.refine_edit.clear()
+            self.timeline.clear_selection()
+            self.region_selected(0.0, 0.0)
+            self._show_result()
+
+        self._run("refine", work_region, done_region)
 
     def variation(self):
         if self.project.plan is None:
@@ -1271,7 +1699,7 @@ class MainWindow(QMainWindow):
         if self.player:
             self.player.stop()
             self.player.setSource(QUrl())
-        self.project = Project()
+        self.project = self._fresh_project()
         self.footage_list.clear()
         self.song_list.clear()
         self.prompt.clear()
@@ -1326,7 +1754,7 @@ class MainWindow(QMainWindow):
         if path:
             self.load_project(Path(path))
 
-    def load_project(self, path: Path):
+    def load_project(self, path: Path, recovered: bool = False):
         try:
             proj = Project.load(path, api_key=store.get_api_key())
         except ValueError as exc:
@@ -1347,9 +1775,13 @@ class MainWindow(QMainWindow):
                 combo.setCurrentIndex(i)
         self.start_edit.setText(_mmss(s.song_start) if s.song_start else "")
         self.end_edit.setText(_mmss(s.song_end) if s.song_end else "")
-        self._remember_recent(path)
-        self._just_opened = True
-        self._set_dirty(False)
+        if recovered:  # back where it was saved (or unsaved), with its changes still to save
+            self._just_opened = False
+            self._recovery_path().unlink(missing_ok=True)
+        else:
+            self._remember_recent(path)
+            self._just_opened = True
+        self._set_dirty(recovered)
         if proj.direction is None:
             self.status.setText(f"Opened {path.name}. Press Make Edit when you're ready.")
             return

@@ -450,3 +450,43 @@ def test_shots_for_my_taps_in_a_selected_part(band_song, media):
     assert starts(plan) == starts(tapped)
     inside = [c.shot for c in plan.cuts if 55.9 <= c.f0 / fps < 58.0]
     assert inside[:3] == picks, inside
+
+
+def test_shot_descriptions_marks_scene_keys_transitions_and_text(analysed):
+    from montage_director.project import Project, Settings
+
+    song, footage = analysed
+    proj = Project(settings=Settings(style="hype", seed=6))
+    proj.song, proj.footage = song, footage
+    usable = [s.id for s in footage.usable_shots()]
+    group, nappa, banned, fav = usable[1], usable[2], usable[3], usable[4]
+    # as if "Describe my shots" had run
+    proj.shot_tags = {i: {"desc": "a fighter alone", "kind": "action", "people": 1} for i in usable}
+    proj.shot_tags[group] = {"desc": "the whole team standing together", "kind": "character", "people": 6}
+    proj.shot_tags[nappa] = {"desc": "Nappa laughing", "kind": "character", "people": 1}
+    proj.direct()
+    proj.refine_region("a shot with as many characters as possible", 16.0, 20.0)
+    proj.mark_shot(banned, "banned")
+    proj.mark_shot(fav, "favorite")
+    proj.taps = [(9.0, "scene1"), (10.0, "cut")]
+    proj.exact_taps = [10.0]
+    proj.apply_taps()
+    proj.texts = [{"text": "Saiyan Pride", "time": 2.0, "duration": 2.0, "style": "title"}]
+    proj.direction.transitions["all"] = "crossfade"
+    plan = proj.make_plan()
+    fps = plan.fps
+    end = [c for c in plan.cuts if c.f0 / fps >= 16.0]
+    assert end and end[0].shot == group, "the ending holds the group shot"
+    assert banned not in {c.shot for c in plan.cuts}
+    assert fav in {c.shot for c in plan.cuts}
+    assert any(c.f0 == round(10.0 * fps) for c in plan.cuts), "an exact tap is not snapped"
+    texts = [(c.f0 + e.frame) / fps for c in plan.cuts for e in c.effects if e.kind == "text"]
+    assert texts and abs(min(texts) - 2.0) < 0.05
+    assert any(c.transition for c in plan.cuts)
+    # names in the descriptions
+    d = read_prompt("show nappa in the intro", style_direction("hype"))
+    proj.direction = d
+    plan = proj.make_plan()
+    intro = [c.shot for c in plan.cuts if c.f1 / fps <= 8.0]
+    assert nappa in intro
+    proj.render_preview()

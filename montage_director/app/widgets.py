@@ -163,6 +163,8 @@ class Timeline(QWidget):
     taps_cleared = Signal()
     taps_removed = Signal(list)             # song seconds of individual taps to take out
     view_changed = Signal(float, float)     # the visible part of the song (zoom / scroll)
+    instruction_requested = Signal(float)   # right-click > Insert instruction here (song seconds)
+    tap_moved = Signal(float, float, bool)  # a tap dragged: old time, new time, exact (Alt / Shift held)
 
     def __init__(self):
         super().__init__()
@@ -181,6 +183,7 @@ class Timeline(QWidget):
         self.regions: list[tuple[float, float, str]] = []    # section edits: (start, end, label)
         self._press_x: float | None = None
         self._dragging = False
+        self._drag_tap: list | None = None   # [original time, kind, current time] while dragging a tap
         self.setMouseTracking(True)
         self.setToolTip("Click to jump there. Drag across part of the song to refine just that part. "
                         "Mouse wheel zooms in and out, Shift + wheel scrolls. "
@@ -209,6 +212,9 @@ class Timeline(QWidget):
         drops = self.current_drops()
         near = [d for d in drops if abs(self._x(d, self.width()) - e.pos().x()) < 8]
         menu = QMenu(self)
+        t_here = self._song_time(e.pos().x())
+        instruct = menu.addAction(f"Insert instruction here ({int(t_here // 60)}:{t_here % 60:04.1f})…")
+        menu.addSeparator()
         add = menu.addAction(f"Mark the drop here ({int(t // 60)}:{t % 60:04.1f})")
         rem = menu.addAction("Remove this drop") if near else None
         reset = menu.addAction("Use the detected drops again") if self.drops is not None else None
@@ -230,6 +236,9 @@ class Timeline(QWidget):
         fit = menu.addAction("Show the whole edit") if self.zoomed() else None
         chosen = menu.exec(e.globalPos())
         if chosen is None:
+            return
+        if chosen is instruct:
+            self.instruction_requested.emit(t_here)
             return
         if chosen is undo:
             self.region_removed.emit(t_raw)
@@ -358,12 +367,28 @@ class Timeline(QWidget):
             self.update()
             self.region_selected.emit(0.0, 0.0)
 
+    def _tap_near(self, x: float):
+        near = [(abs(self._x(t, self.width()) - x), t, k) for t, k in self.taps
+                if abs(self._x(t, self.width()) - x) < 6]
+        return min(near)[1:] if near else None
+
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton or self.end <= self.start:
+            return
+        hit = self._tap_near(e.position().x())
+        if hit:  # grab a tap to move it
+            self._drag_tap = [hit[0], hit[1], hit[0]]
+            self.setCursor(Qt.SizeHorCursor)
             return
         self._press_x, self._dragging = e.position().x(), False
 
     def mouseMoveEvent(self, e):
+        if self._drag_tap is not None:
+            self._drag_tap[2] = self._song_time(e.position().x())
+            self.update()
+            return
+        if self._press_x is None and self.song and self.taps:
+            self.setCursor(Qt.SizeHorCursor if self._tap_near(e.position().x()) else Qt.ArrowCursor)
         if self._press_x is None or not self.song:
             return
         if not self._dragging and abs(e.position().x() - self._press_x) < 6:
@@ -374,6 +399,15 @@ class Timeline(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, e):
+        if self._drag_tap is not None:
+            old, kind, new = self._drag_tap
+            self._drag_tap = None
+            self.setCursor(Qt.ArrowCursor)
+            exact = bool(e.modifiers() & (Qt.AltModifier | Qt.ShiftModifier))
+            if abs(self._x(new, self.width()) - self._x(old, self.width())) >= 2:
+                self.tap_moved.emit(old, new, exact)
+            self.update()
+            return
         if self._press_x is None:
             return
         if self._dragging and self.selection:
@@ -502,11 +536,19 @@ class Timeline(QWidget):
             p.drawRect(QRectF(x0, top - 1, max(2, x1 - x0), wave_h + 2))
         # Tap to Direct marks: cyan for cuts, white / amber / pink for effects and drops.
         tap_colors = {"cut": "#38d9f5", "flash": "#ffffff", "zoom": theme.WARN, "shake": theme.WARN, "drop": theme.HOT}
+        tiny = QFont(self.font())
+        tiny.setPointSizeF(7)
+        p.setFont(tiny)
         for t, kind in self.taps:
+            if self._drag_tap is not None and abs(t - self._drag_tap[0]) < 1e-6:
+                t = self._drag_tap[2]  # being dragged
             if self.start <= t <= self.end:
                 x = self._x(t, w)
-                p.setPen(QPen(QColor(tap_colors.get(kind, "#38d9f5")), 2))
+                col = QColor(theme.OK) if kind.startswith("scene") else QColor(tap_colors.get(kind, "#38d9f5"))
+                p.setPen(QPen(col, 2))
                 p.drawLine(QPointF(x, top + wave_h - 22), QPointF(x, top + wave_h))
+                if kind.startswith("scene"):
+                    p.drawText(QRectF(x + 2, top + wave_h - 24, 12, 10), Qt.AlignLeft, kind[5:])
         p.setBrush(Qt.NoBrush)
         p.setFont(small)
         # Playhead

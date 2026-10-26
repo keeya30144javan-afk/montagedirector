@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bisect
 import colorsys
+import re
 import copy
 import logging
 import random
@@ -45,7 +46,8 @@ class _Planner:
         self.E = max(self.S + 1.0, end)
         self.total = int(round((self.E - self.S) * self.fps))
         self.beat = 60.0 / song.tempo if song.tempo else 0.5
-        self.avoid = set(direction.avoid_shots)
+        self.avoid = set(direction.avoid_shots) | set(direction.banned)
+        self.favs = set(direction.favorites) - self.avoid
         self.shots = [s for s in footage.usable_shots() if s.id not in self.avoid] or footage.usable_shots()
         self.uses: dict[int, int] = {}
         self.used_windows: dict[int, list[tuple[float, float]]] = {}
@@ -61,7 +63,11 @@ class _Planner:
         # Everything a director times by hand is put on the song's real grid: the AI
         # can't hear the music, so its "1:36" may fall between two beats.
         self.d = direction = copy.deepcopy(direction)
+        self.exact = list(self.d.tap_exact)
         self.tap_cuts = sorted({round(self.snap_tap(t), 3) for t in self.d.tap_cuts})
+        self.scene_taps = {}
+        for sc in self.d.tap_scenes:
+            self.scene_taps[self.frame_of(self.snap_tap(sc["time"]))] = sc
         for m in self.d.moments:
             if m.tapped:
                 m.time = self.snap_tap(m.time)
@@ -127,6 +133,8 @@ class _Planner:
     def snap_tap(self, t: float) -> float:
         """A tap by ear: lands on the drum hit you meant (within 100 ms), else on the
         nearest beat or half-beat (within 120 ms), else exactly where you tapped."""
+        if any(abs(t - x) < 1e-3 for x in getattr(self, "exact", [])):
+            return float(t)  # placed exactly by the user
         drums = self.song.kicks + self.song.snares
         if drums:
             d = min(drums, key=lambda x: abs(x - t))
@@ -226,6 +234,7 @@ class _Planner:
         f = self.features.get(s.id)
         if f is None:
             return 0.0
+        pref = {k: v for k, v in pref.items()}
         score = 0.0
         for k in ("bright", "sat", "warm", "motion"):
             if k in pref:
@@ -236,6 +245,15 @@ class _Planner:
         for k, v in pref.items():
             if k.startswith("camera_") and s.camera == k[7:]:
                 score += v
+        tag = self.d.shot_tags.get(s.id) if self.d.shot_tags else None
+        if tag:
+            if "crowd" in pref and tag.get("people") is not None:  # "as many characters as possible"
+                score += pref["crowd"] * (min(int(tag["people"]), 6) / 1.5 - 0.6)
+            words = pref.get("_query")
+            if words:  # names and things in the AI's shot descriptions
+                desc = (tag.get("desc", "") + " " + tag.get("kind", "")).lower()
+                hits = sum(1 for w in words if re.search(r"\b" + re.escape(w[:max(4, len(w) - 2)]), desc))
+                score += 2.5 * hits / len(words) - 0.3
         return float(score)
 
     def drum_times(self, kind: str, a: float, b: float) -> list[float]:
@@ -728,10 +746,15 @@ class _Planner:
             return used == least and self.cut_i - self.group_last.get(s.group, 0) > max(8, self.n_groups * 3 // 4)
         return self.cut_i - self.group_last.get(s.group, -99) > max(8, self.n_groups // 3)
 
-    def pick_shot(self, t0: float, need: float, prev: Cut | None) -> Shot:
+    def pick_shot(self, t0: float, need: float, prev: Cut | None, scene: dict | None = None) -> Shot:
         sd = self.sd_at(t0)
-        pref = self.prefer_at(t0)
+        pref = dict(scene["prefer"]) if scene and scene.get("prefer") else self.prefer_at(t0)
         ov = self.overlay_at(t0)
+        if scene and scene.get("favorites") and self.favs:
+            # scene key "my favourites": one of the ★ shots, least used first
+            favs = [self.footage.shots[i] for i in self.favs if 0 <= i < len(self.footage.shots)]
+            favs = [s for s in favs if prev is None or s.id != prev.shot] or favs
+            return min(favs, key=lambda s: (self.uses.get(s.id, 0), self.group_last.get(s.group, -99), self.rng.random()))
         if ov and ov.picked and ov.shots:
             # shots the user picked for these cuts, in their order (round again if there are more cuts)
             ids = [i for i in ov.shots if 0 <= i < len(self.footage.shots)]
@@ -745,6 +768,12 @@ class _Planner:
                 return self.footage.shots[sid]
         if sd and sd.hold and not sd.shots:
             pool = [s for s in self.shots if self.allowed(s)] or list(self.shots)
+            if pref and self.d.repeats != "never":
+                # asked for something specific ("as many characters as possible"): the best match
+                # may come back even if it was used earlier
+                best = max((self.content_score(s, pref) for s in pool), default=-9.0)
+                pool += [s for s in self.shots if s not in pool and self.content_score(s, pref) > max(0.6, best)
+                         and (prev is None or s.id != prev.shot)]
             def hold_score(s):
                 fits = min(1.0, self.usable_len(s) / max(need, 0.1))
                 calm = (1 - s.motion) if sd.still else 1 - abs(s.motion - 0.35)
@@ -814,7 +843,10 @@ class _Planner:
             if sd and sd.camera and s.camera == sd.camera:
                 score += 1.0
             if pref:
-                score += 1.8 * match
+                score += (4.0 if scene else 1.8) * match
+            if s.id in self.favs:  # ★ shots: a bit more often, and above all at the big moments
+                big = target > 0.7 or any(d - 0.1 <= t0 < d + 8 * self.beat for d in self.drops)
+                score += 0.6 + (1.4 if big else 0.0)
             keys = self.reserved.get(s.id)
             if keys and (not pref or repr(sorted(pref.items())) not in keys):
                 score -= 0.9  # saved for the part of the song that asked for it
@@ -902,7 +934,7 @@ class _Planner:
             elif dur >= 0.3 and self.rng.random() < self.effect_at(t0, "reverse") * 0.5:
                 reverse = True
             need = dur * speed
-            shot = self.pick_shot(t0, need, prev)
+            shot = self.pick_shot(t0, need, prev, self.scene_taps.get(f0))
             sd_here = self.sd_at(t0)
             frozen = bool(sd_here and sd_here.freeze_frame and sd_here.shots and shot.id in sd_here.shots)
             if frozen:
@@ -931,12 +963,21 @@ class _Planner:
 
         self.apply_effects(cuts)
         cuts = self.apply_moments(cuts)
+        self.apply_transitions(cuts)
+        self.apply_texts(cuts)
         plan = EditPlan(fps=self.fps, width=self.out.width, height=self.out.height,
                         song=self.song.path, song_start=round(self.S, 3), frames=self.total,
                         cuts=cuts, look=self.d.look, fit=self.out.fit, summary=self.d.summary)
         plan.timeline = list(self.timeline_notes)
         plan.proxies = {s.path: s.proxy for s in self.footage.sources if s.proxy and Path(s.proxy).is_file()}
         plan.warnings.extend(self.warnings)
+        wants = [p for p in [*self.d.prefer.values(), *(sd.prefer for sd in self.d.sections + self.overlays)]
+                 if p and ("crowd" in p or p.get("_query"))]
+        if wants and not self.d.shot_tags:
+            plan.warnings.append(
+                "To find shots by who is in them (names, or as many characters as possible), the app needs to look at "
+                "your shots once: press Describe my shots (AI) in the Footage section (it costs about a cent). "
+                "Or choose the shot yourself with Pick shot….")
         reused = self.cut_i - len(self.group_uses)
         if reused > 0:
             plan.warnings.append(
@@ -1065,6 +1106,68 @@ class _Planner:
                 dense = len(self.drum_times(drum, t - 2 * self.beat, t + 2 * self.beat)) > 4
                 strength = {"flash": 0.55 if dense else 0.85, "zoom": 0.55 if dense else 0.75, "shake": 0.6}.get(eff, 0.8)
                 self.add(cuts, f, eff, 2 if eff == "flash" and dense else frames, strength)
+
+    # ----- transitions and text cards ------------------------------------------ #
+    def transition_at(self, t: float) -> str | None:
+        sd = self.sd_at(t)
+        if sd is not None and sd.transition:
+            return sd.transition
+        ov = self.overlay_at(t)
+        if ov is not None and ov.transition:
+            return ov.transition
+        tr = self.d.transitions
+        kind = tr.get(self.label_at(t)) or tr.get("all")
+        if kind:
+            return kind
+        if "@sections" in tr:  # "lots of transitions": where a new part of the song starts
+            starts = [s.start for s in self.song.sections if self.S < s.start < self.E]
+            if any(abs(t - x) < 0.5 / self.fps + 1e-6 for x in starts):
+                return "zoom" if any(abs(t - d) < 0.05 for d in self.drops) else tr["@sections"]
+        return None
+
+    def apply_transitions(self, cuts: list[Cut]) -> None:
+        for i in range(1, len(cuts)):
+            c, prev = cuts[i], cuts[i - 1]
+            kind = self.transition_at(self.song_t(c.f0))
+            if not kind or kind == "mix":
+                kind = None if not kind else "crossfade"
+            if not kind or prev.reverse or prev.shot == c.shot:
+                continue
+            secs = 0.4 if kind in ("crossfade", "dissolve") else 0.27
+            n = min(int(round(secs * self.fps)), c.frames // 2, prev.frames)
+            if n < 3 or c.frames < int(0.3 * self.fps):
+                continue  # too quick to blend: stays a hard cut
+            out_at = prev.src_start + prev.frames / self.fps * prev.speed
+            shot = self.footage.shots[prev.shot]
+            room = self.take_end.get(shot.id, shot.end) - out_at
+            freeze = prev.freeze or room < n / self.fps * prev.speed + 0.05
+            c.transition = {"kind": kind, "frames": n, "source": prev.source,
+                            "src_start": round(prev.src_start if prev.freeze else
+                                               (max(prev.src_start, out_at - 1.0 / self.fps) if freeze else out_at), 3),
+                            "speed": prev.speed, "freeze": freeze, "crop": list(prev.crop), "focus": list(prev.focus)}
+
+    def apply_texts(self, cuts: list[Cut]) -> None:
+        from .titles import text_card
+
+        for t in list(self.d.texts) + list(self.d.user_texts):
+            text = str(t.get("text", "")).strip()
+            if not text:
+                continue
+            dur = max(0.5, float(t.get("duration") or 3.0))
+            at = float(t.get("time", -2.0))
+            start = self.S if at <= -2 else (max(self.S, self.E - dur) if at < 0 else at)
+            f0, f1 = max(0, self.frame_of(start)), min(self.total, self.frame_of(start + dur))
+            if f1 - f0 < 2:
+                continue
+            name = text_card(text, t.get("style", "title"), self.out.width, self.out.height).name
+            fade = min(0.4, dur / 4)
+            for c in cuts:
+                a, b = max(c.f0, f0), min(c.f1, f1)
+                if b <= a:
+                    continue
+                edges = ("in" if a == f0 else "") + ("out" if b == f1 else "")
+                tag = {"inout": "both", "in": "in", "out": "out", "": "none"}[edges]
+                c.effects.append(Effect("text", a - c.f0, b - a, fade, f"{name}|{tag}"))
 
     def split_freeze(self, cuts: list[Cut], i: int, hold: int) -> None:
         """Freeze the last `hold` frames of cut i (the beat before a drop)."""

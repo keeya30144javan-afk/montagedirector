@@ -168,4 +168,7 @@ def test_a_still_for_the_final_shot():
     from montage_director.reader import region_direction
 
     sd, _ = region_direction("a still of a bunch of characters on screen for the final shot", 280.0, 290.0)
-    assert sd is not None and sd.hold and sd.still and "Pick shot" in sd.what
+    assert sd is not None and sd.hold and sd.still and sd.prefer.get("crowd") == 1.0
+    sd, _ = region_direction("id like a shot or scene with as many characters as possible for the last part of the song",
+                             280.0, 290.0)
+    assert sd.hold and sd.prefer == {"crowd": 1.0}

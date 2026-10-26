@@ -119,18 +119,61 @@ def _between(windows: list[tuple[int, int]], var: str = "n") -> str:
 
 
 def segment_filter(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int, idx: int = 0) -> str:
-    """Build the filtergraph for one cut. Input is [idx:v], output is [v{idx}] with exactly
-    cut.frames frames (so several cuts can be joined inside one ffmpeg run)."""
-    return _label(_segment_graph(cut, look, fit, W, H, fps), idx, cut.frames)
+    """Build the filtergraph for one cut. Input is [idx:v] (and [idx+1:v] for a transition),
+    output is [v{idx}] with exactly cut.frames frames (so cuts can be joined in one ffmpeg run)."""
+    return _label(_segment_graph(cut, look, fit, W, H, fps), idx, cut.frames, idx, idx + 1)
 
 
-def _label(graph: str, idx: int, frames: int) -> str:
-    graph = graph.replace("[0:v]", f"[{idx}:v]")
-    for name in ("f", "s1", "s2", "bg", "fg", "g1", "g2", "g3"):
-        graph = graph.replace(f"[{name}]", f"[{name}_{idx}]")
+_LABELS = ("f", "f0", "fm", "tp", "s1", "s2", "bg", "fg", "ts1", "ts2", "tbg", "tfg", "g1", "g2", "g3", "x0", "x1",
+           "x2", "x3", "x4", "x5", "t0", "t1", "t2", "t3", "t4", "t5")
+
+
+def _label(graph: str, in_idx: int, frames: int, out_idx: int | None = None, t_idx: int | None = None) -> str:
+    out_idx = in_idx if out_idx is None else out_idx
+    graph = graph.replace("[0:v]", f"[{in_idx}:v]")
+    if t_idx is not None:
+        graph = graph.replace("[T:v]", f"[{t_idx}:v]")
+    for name in _LABELS:
+        graph = graph.replace(f"[{name}]", f"[{name}_{out_idx}]")
     assert graph.endswith("[v]")
     # square pixels + exact frame count, so cuts can be joined inside one run
-    return graph[:-3] + f",setsar=1,trim=end_frame={frames},setpts=PTS-STARTPTS[v{idx}]"
+    return graph[:-3] + f",setsar=1,trim=end_frame={frames},setpts=PTS-STARTPTS[v{out_idx}]"
+
+
+def _framing(inp: str, out: str, base: str, fit: str, focus: tuple[float, float], W: int, H: int,
+             prefix: str = "") -> list[str]:
+    """Fit a source into the W x H frame (crop to fill on the action, black bars, or blurred background)."""
+    g: list[str] = []
+    if fit == "fit":
+        g.append(f"{inp}{base},scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic,"
+                 f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1{out}")
+    elif fit == "blur":
+        g.append(f"{inp}{base},split[{prefix}s1][{prefix}s2]")
+        g.append(f"[{prefix}s1]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
+                 f"gblur=sigma=28,eq=brightness=-0.08[{prefix}bg]")
+        g.append(f"[{prefix}s2]scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic[{prefix}fg]")
+        g.append(f"[{prefix}bg][{prefix}fg]overlay=(W-w)/2:(H-h)/2,setsar=1{out}")
+    else:
+        fx, fy = focus
+        # crop to fill, centred on the action (matters when the shapes differ, e.g. vertical edits)
+        # (crop first, then scale: a vertical edit from 1080p footage would otherwise scale every
+        # frame up to 3413x1920 only to throw two thirds of it away)
+        ar = W / H
+        g.append(f"{inp}{base},crop='trunc(min(iw,ih*{ar:.6f})/2)*2':'trunc(min(ih,iw/{ar:.6f})/2)*2':"
+                 f"'min(max(iw*{fx:.3f}-ow/2,0),iw-ow)':'min(max(ih*{fy:.3f}-oh/2,0),ih-oh)',"
+                 f"scale={W}:{H}:flags=bicubic,setsar=1{out}")
+    return g
+
+
+def _bars(crop) -> str:
+    x, y, cw, ch = crop
+    if (cw, ch) != (1.0, 1.0):
+        return f",crop=trunc(iw*{cw}/2)*2:trunc(ih*{ch}/2)*2:trunc(iw*{x}):trunc(ih*{y})"
+    return ""
+
+
+XFADE = {"crossfade": "fade", "dissolve": "dissolve", "whip": "smoothleft", "zoom": "zoomin", "white": "fadewhite",
+         "black": "fadeblack", "circle": "circleopen", "wipe": "wipeleft", "slide": "slideleft"}
 
 
 def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> str:
@@ -146,29 +189,24 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
         pre += [f"setpts=(PTS-STARTPTS)/{cut.speed:.4f}", f"fps={fps}",
                 "tpad=stop_mode=clone:stop_duration=2"]
 
-    x, y, cw, ch = cut.crop
-    if (cw, ch) != (1.0, 1.0):
-        pre.append(f"crop=trunc(iw*{cw}/2)*2:trunc(ih*{ch}/2)*2:trunc(iw*{x}):trunc(ih*{y})")
+    base = ",".join(pre) + _bars(cut.crop)
     graph: list[str] = []
-    base = ",".join(pre)
-    if fit == "fit":
-        graph.append(f"[0:v]{base},scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic,"
-                     f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[f]")
-    elif fit == "blur":
-        graph.append(f"[0:v]{base},split[s1][s2]")
-        graph.append(f"[s1]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},"
-                     f"gblur=sigma=28,eq=brightness=-0.08[bg]")
-        graph.append(f"[s2]scale={W}:{H}:force_original_aspect_ratio=decrease:flags=bicubic[fg]")
-        graph.append("[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1[f]")
+    tr = cut.transition
+    if tr and tr.get("frames", 0) >= 2:
+        # The previous shot keeps playing under this cut for a few frames and blends out.
+        k = max(2, min(int(tr["frames"]), n - 1))
+        if tr.get("freeze"):
+            tbase = f"trim=end_frame=1,setpts=PTS-STARTPTS,fps={fps},tpad=stop_mode=clone:stop={k + 2}"
+        else:
+            tbase = f"setpts=(PTS-STARTPTS)/{float(tr.get('speed', 1.0)):.4f},fps={fps},tpad=stop_mode=clone:stop_duration=2"
+        tbase += _bars(tuple(tr.get("crop", (0.0, 0.0, 1.0, 1.0))))
+        graph += _framing("[T:v]", "[tp]", tbase, fit, tuple(tr.get("focus", (0.5, 0.5))), W, H, prefix="t")
+        graph += _framing("[0:v]", "[f0]", base, fit, cut.focus, W, H)
+        graph.append(f"[tp]trim=end_frame={k},setpts=PTS-STARTPTS,fps={fps},format=yuv420p[t0]")
+        graph.append(f"[f0]fps={fps},format=yuv420p[fm]")
+        graph.append(f"[t0][fm]xfade=transition={XFADE.get(tr.get('kind'), 'fade')}:duration={k / fps:.4f}:offset=0[f]")
     else:
-        fx, fy = cut.focus
-        # crop to fill, centred on the action (matters when the shapes differ, e.g. vertical edits)
-        # (crop first, then scale: a vertical edit from 1080p footage would otherwise scale every
-        # frame up to 3413x1920 only to throw two thirds of it away)
-        ar = W / H
-        graph.append(f"[0:v]{base},crop='trunc(min(iw,ih*{ar:.6f})/2)*2':'trunc(min(ih,iw/{ar:.6f})/2)*2':"
-                     f"'min(max(iw*{fx:.3f}-ow/2,0),iw-ow)':'min(max(ih*{fy:.3f}-oh/2,0),ih-oh)',"
-                     f"scale={W}:{H}:flags=bicubic,setsar=1[f]")
+        graph += _framing("[0:v]", "[f]", base, fit, cut.focus, W, H)
 
     chain: list[str] = []
     by_kind: dict[str, list[Effect]] = {}
@@ -241,7 +279,24 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
         chain.append(f"drawbox=x=0:y=0:w=iw:h={bar}:color=black:t=fill")
         chain.append(f"drawbox=x=0:y=ih-{bar}:w=iw:h={bar}:color=black:t=fill")
 
+    texts = by_kind.get("text", [])
     tail = "[f]" + (",".join(chain) if chain else "null")
+    if texts:
+        # Text cards (pictures in the text folder; ffmpeg runs from there, so plain file names work).
+        cur = "x0"
+        graph.append(f"{tail}[x0]")
+        for j, e in enumerate(texts[:5]):
+            a, b = e.frame, e.frame + e.frames - 1
+            fade = max(1, min(int(e.intensity * fps), max(1, e.frames // 3)))
+            fx = f"fade=t=in:st=0:n={fade}:alpha=1" if e.color.endswith("|in") or e.color.endswith("|both") else "null"
+            fo = (f"fade=t=out:s={max(0, e.frames - fade)}:n={fade}:alpha=1" if e.color.endswith("|out") or
+                  e.color.endswith("|both") else "null")
+            name = e.color.split("|")[0]
+            graph.append(f"movie={name},loop=loop=-1:size=1,setpts=N/({fps}*TB),format=rgba,scale={W}:{H},"
+                         f"trim=end_frame={e.frames},{fx},{fo},setpts=PTS-STARTPTS+{a}/({fps}*TB)[t{j}]")
+            graph.append(f"[{cur}][t{j}]overlay=0:0:eof_action=pass:enable='between(n,{a},{b})'[x{j + 1}]")
+            cur = f"x{j + 1}"
+        tail = f"[{cur}]null"
     if look.glow > 0:
         sigma = 6 + 14 * min(1.0, look.glow)
         opacity = 0.18 + 0.4 * min(1.0, look.glow)
@@ -285,15 +340,26 @@ class Renderer:
             log.info("Reusing %d of %d rendered cuts", cuts_done, cuts_total)
         started = time.time()
         lock = threading.Lock()
+        text_dir = cache_dir() / "texts"
+        text_dir.mkdir(parents=True, exist_ok=True)
 
         def encode(a: int, b: int, target: Path):
             cmd = [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y"]
             parts = []
+            k = 0  # input index (a cut with a transition has a second input: the previous shot)
             for i, cut in enumerate(plan.cuts[a:b]):
                 need = cut.frames / plan.fps * cut.speed
                 src = plan.proxies.get(cut.source, cut.source) if quality.name == "preview" else cut.source
                 cmd += ["-ss", f"{max(0.0, cut.src_start):.3f}", "-t", f"{need + 0.6:.3f}", "-i", src]
-                parts.append(_label(graphs[a + i], i, cut.frames))
+                t_idx = None
+                tr = cut.transition
+                if tr and tr.get("frames", 0) >= 2:
+                    tsrc = plan.proxies.get(tr["source"], tr["source"]) if quality.name == "preview" else tr["source"]
+                    tneed = tr["frames"] / plan.fps * float(tr.get("speed", 1.0)) + 0.6
+                    cmd += ["-ss", f"{max(0.0, tr['src_start']):.3f}", "-t", f"{tneed:.3f}", "-i", tsrc]
+                    t_idx = k + 1
+                parts.append(_label(graphs[a + i], k, cut.frames, i, t_idx))
+                k += 2 if t_idx is not None else 1
             n = b - a
             graph = ";".join(parts) + ";" + "".join(f"[v{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0[out]"
             frames = sum(c.frames for c in plan.cuts[a:b])
@@ -302,7 +368,7 @@ class Renderer:
                     "-fps_mode", "cfr", "-r", str(plan.fps), *encoder_args(enc, quality, plan.fps),
                     "-video_track_timescale", str(plan.fps * 1000), str(tmp)]
             try:
-                self.procs.run(cmd, cancel)
+                self.procs.run(cmd, cancel, cwd=str(text_dir))
                 os.replace(tmp, target)
             except MediaError:
                 if enc != "libx264":
