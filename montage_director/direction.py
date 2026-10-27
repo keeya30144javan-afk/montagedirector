@@ -201,6 +201,9 @@ class Direction:
     tap_scenes: list[dict] = field(default_factory=list)     # scene-key taps: {time, prefer, favorites}
     shot_tags: dict[int, dict] = field(default_factory=dict)  # AI shot descriptions {id: {desc, kind, people}}
     min_shot: float = 0.0                                    # "longer scenes": no shot shorter than this (seconds)
+    banned_fx: list[str] = field(default_factory=list)       # "no slow motion": never, not even to fill a gap
+    asked_labels: list[str] = field(default_factory=list)    # parts of the song the prompt named ("the intro")
+    asked_fx: dict[str, list[str]] = field(default_factory=dict)  # label -> effects asked for there by name
 
     def section_direction(self, t: float) -> SectionDirection | None:
         for s in self.sections:

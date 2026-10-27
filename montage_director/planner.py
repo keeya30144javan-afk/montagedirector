@@ -37,8 +37,61 @@ def make_plan(song: SongMap, footage: Footage, direction: Direction, out: Output
     return _Planner(song, footage, direction, out).build()
 
 
+def _fill_grid(times: list[float], period: float, end: float) -> list[float]:
+    """Carry an evenly spaced grid through the gaps in `times` (and before the first / after the last)."""
+    t = sorted(times)
+    out = [t[0] - k * period for k in range(int(t[0] / period), 0, -1) if t[0] - k * period > 0.05]
+    for a, b in zip(t, t[1:]):
+        out.append(a)
+        n = round((b - a) / period)
+        if n >= 2 and abs((b - a) / n - period) < 0.25 * period:
+            out += [a + k * (b - a) / n for k in range(1, n)]
+    out.append(t[-1])
+    x = t[-1] + period
+    while x < end - 0.05:
+        out.append(x)
+        x += period
+    return [round(v, 4) for v in out]
+
+
+def _fill_beat_grid(song: SongMap) -> SongMap:
+    """A soft intro or a breakdown can have no beats the tracker could hear: carry the song's beat (and bar)
+    grid through it, so "fast cuts" or "every beat" still have somewhere to land. (A copy.)"""
+    if len(song.beats) < 4 or not song.tempo:
+        return song
+    period = 60.0 / song.tempo
+    beats = _fill_grid(song.beats, period, song.duration)
+    if len(beats) <= len(song.beats) + 1:
+        return song
+    song = copy.copy(song)
+    song.beats = beats
+    if len(song.downbeats) >= 2:
+        song.downbeats = _fill_grid(song.downbeats, 4 * period, song.duration)
+    return song
+
+
+def _name_the_ends(song: SongMap, d: Direction) -> SongMap:
+    """"Flicker in the intro" when the song's first part was heard as a build: the user means the start.
+    Same for "the outro" and the last part. (A copy: the song itself isn't changed.)"""
+    secs = song.sections
+    if not secs or not d.asked_labels:
+        return song
+    labels = {s.label for s in secs}
+    rename = {}
+    if "intro" in d.asked_labels and "intro" not in labels and secs[0].start <= 1.0 and secs[0].label != "drop":
+        rename[0] = "intro"
+    if "outro" in d.asked_labels and "outro" not in labels and len(secs) > 1:
+        rename[len(secs) - 1] = "outro"
+    if not rename:
+        return song
+    song = copy.copy(song)
+    song.sections = [dataclasses.replace(s, label=rename.get(i, s.label)) for i, s in enumerate(secs)]
+    return song
+
+
 class _Planner:
     def __init__(self, song: SongMap, footage: Footage, direction: Direction, out: OutputSettings):
+        song = _name_the_ends(_fill_beat_grid(song), direction)
         self.song, self.footage, self.d, self.out = song, footage, direction, out
         self.rng = random.Random(out.seed)
         self.fps = out.fps
@@ -72,6 +125,7 @@ class _Planner:
         self.scene_taps = {}
         for sc in self.d.tap_scenes:
             self.scene_taps[self.frame_of(self.snap_tap(sc["time"]))] = sc
+        self.ending = set()  # moments that close the edit ("end on a freeze frame")
         for m in self.d.moments:
             if m.tapped:
                 m.time = self.snap_tap(m.time)
@@ -80,6 +134,7 @@ class _Planner:
                 m.time = self.S
             elif m.time < 0:  # "...then fade to black" at the very end
                 m.time = max(self.S, self.E - (m.duration or 1.5))
+                self.ending.add(id(m))
             elif m.action != "fade_black":
                 m.time = self.snap(m.time, hit=m.action in ("flash", "rgb", "invert", "fade_white"))
         if direction.drops is None:
@@ -164,6 +219,8 @@ class _Planner:
     def snap(self, t: float, bar: bool = False, hit: bool = False) -> float:
         """Nearest musical moment: a strong drum hit (hit=True, within 120 ms), the start
         of a bar (bar=True, within 1.5 beats), otherwise the nearest beat."""
+        if t <= self.S + 0.05 or t >= self.E - 0.05:
+            return float(t)  # the very start / end of the edit stays where it is
         if hit:
             close = [h for h in self.hits_near(t) if abs(h[0] - t) <= 0.12 and h[1] >= 0.35]
             if close:
@@ -586,6 +643,7 @@ class _Planner:
                         base = _slower(base)
                     elif local < self.energy_q[1] and base <= 0.5:
                         base = 1.0
+            if label not in self.d.rate_locked:  # (a rate the user set exactly, "every beat", stays exact)
                 base = self.long_enough(base)
         ramp = self.ramp_at(t)
         if ramp:  # quicker and quicker: full length, then half, then a quarter
@@ -750,7 +808,7 @@ class _Planner:
         for p in kept[1:]:
             label = self.label_at(self.song_t(final[-1]))
             max_len = int((6.0 if label in ("intro", "outro", "breakdown") else 4.0) * self.fps)
-            if self.hold_at(self.song_t(final[-1]) + 0.01):
+            if self.hold_at(self.song_t(final[-1]) + 2.0 / self.fps):  # (a hold may start a hair after its frame)
                 max_len = int(30.0 * self.fps)  # one shot held on purpose, up to 30 s
             elif self.tap_cuts and any(self.frame_of(a) - 1 <= final[-1] <= self.frame_of(b) for a, b in self.tap_runs()):
                 max_len = int(12.0 * self.fps)  # the user chose these cut lengths by ear
@@ -1033,6 +1091,17 @@ class _Planner:
         if not self.shots:
             raise ValueError("There are no usable shots in the footage.")
         points = self.cut_points()
+        if self.d.repeats == "never" and len(points) - 1 > self.n_groups and not self.tap_cuts:
+            # "no repeated scenes" but there aren't enough scenes for this many cuts: cut a little slower
+            # so every scene can be new (rather than quietly breaking the promise)
+            before, asked = len(points) - 1, self.d.min_shot
+            for k in (0.6, 0.75, 0.9, 1.05, 1.3, 1.6, 2.0, 3.0):  # as little slower as will do
+                self.d.min_shot = max(asked, k * (self.E - self.S) / self.n_groups)
+                points = self.cut_points()
+                if len(points) - 1 <= self.n_groups:
+                    break
+            self.warnings.append(f"To show every scene only once, cuts were slowed down ({before} → {len(points) - 1} "
+                                 f"cuts for {self.n_groups} different scenes). Add more footage for faster cutting.")
         self.down_frames = {self.frame_of(b) for b in self.song.downbeats if self.S <= b < self.E}
         cuts: list[Cut] = []
         prev = None
@@ -1041,11 +1110,11 @@ class _Planner:
             dur = (f1 - f0) / self.fps
             label = self.label_at(t0)
             speed, reverse = 1.0, False
-            if self.velocity_at(t0) and not self.d.style.pure:
+            if self.velocity_at(t0):
                 # velocity edit: clips race, then slow right down on the big beats
                 on_big = f0 in self.down_frames or any(abs(t - t0) < 0.06 and st >= 0.6 for t, st in self.hits_near(t0))
                 speed = 0.45 if on_big and dur >= 0.3 else (1.7 if dur >= 0.2 else 1.0)
-            elif dur >= 0.4 and self.rng.random() < self.effect_at(t0, "slowmo") * 0.7:
+            elif dur >= 0.3 and self.rng.random() < self.effect_at(t0, "slowmo") * 0.7:
                 speed = 0.5
             elif dur >= 0.3 and self.rng.random() < self.effect_at(t0, "reverse") * 0.5:
                 reverse = True
@@ -1057,12 +1126,12 @@ class _Planner:
             if frozen or playing_out:
                 speed, reverse = 1.0, False
                 need = dur
-            elif (self.d.style.natural_holds and dur >= 1.2 and not (sd_here and sd_here.shots)
+            elif (self.d.style.natural_holds and dur >= 1.2 and speed == 1.0 and not (sd_here and sd_here.shots)
                   and shot.start + need <= self.footage.sources[shot.source].duration - 0.1
                   and all(x.usable and x.text < 0.5 and x.id not in self.avoid
                           for x, _ in self.scene_window(shot, need)[1:])):
                 speed = 1.0  # 2000s: a long shot plays on through the footage's own cuts, as it was animated
-            elif self.usable_len(shot) < need and not self.d.style.pure:
+            elif self.usable_len(shot) < need and not self.d.style.pure and "slowmo" not in self.d.banned_fx:
                 # Shot shorter than the cut: stretch it with slow motion instead of
                 # running past it into the next scene (which reads as an off-beat cut).
                 speed = max(0.25, round(self.usable_len(shot) / dur, 3))
@@ -1222,8 +1291,6 @@ class _Planner:
     def apply_flicker(self, cuts: list[Cut]) -> None:
         """Black flicker ("dark music video", "flicker in the intro"): the picture blinks to black for a frame
         or three about five times a second, like a failing light. The amount sets how often."""
-        if self.d.style.pure:
-            return
         period = max(4, int(round(0.2 * self.fps)))
         for c in cuts:
             for f in range(c.f0 + period // 2, c.f1 - 1, period):
@@ -1235,11 +1302,16 @@ class _Planner:
         """Effects asked for in a part of the song ("more flashes", "zoom", "shake" there) really show up:
         on every bar and the strong hits, not just as a slightly higher chance."""
         beat_f = max(2, int(round(self.beat * self.fps)))
-        for sd in self.d.sections + self.overlays:
-            fx = {k: v for k, v in sd.effects.items() if v >= 0.75 and k in ("flash", "zoom", "shake", "rgb", "invert")}
+        jobs = [(sd.start, sd.end, sd.effects) for sd in self.d.sections + self.overlays]
+        for sec in self.song.sections:  # "shake on the drop": asked for by the part's name
+            asked = self.d.asked_fx.get(sec.label)
+            if asked:
+                jobs.append((sec.start, sec.end, {k: 0.75 for k in asked}))
+        for start, end, effects in jobs:
+            fx = {k: v for k, v in effects.items() if v >= 0.75 and k in ("flash", "zoom", "shake", "rgb", "invert")}
             if not fx:
                 continue
-            a, b = max(sd.start, self.S), min(sd.end, self.E)
+            a, b = max(start, self.S), min(end, self.E)
             downs = [t for t in self.song.downbeats if a <= t < b]
             strong = [t for t, st in self.song.hits if a <= t < b and st >= 0.5]
             for kind in fx:
@@ -1382,9 +1454,7 @@ class _Planner:
     def apply_stutters(self, cuts: list[Cut]) -> list[Cut]:
         """Stutter cuts (Glitch/VHS, or "stutters on the drop"): the start of a shot repeats two or three
         times in quick flickers, like a skipping tape, before it plays on. Done on cuts that land on a snare."""
-        if self.d.style.pure:
-            return cuts
-        flick = max(2, int(round(self.beat / 6 * self.fps)))
+        flick = max(2, int(round(self.beat / 6 * self.fps)))  # (cuts-only styles: only when asked for)
         snares = set(self.frame_of(t) for t in self.song.snares if self.S <= t < self.E)
         out: list[Cut] = []
         for c in cuts:
@@ -1426,6 +1496,14 @@ class _Planner:
             i = self.cut_index_at(cuts, f)
             c = cuts[i]
             dur_f = max(2, int(round((m.duration or 0.5) * self.fps)))
+            if m.action == "freeze" and id(m) in self.ending and i < len(cuts) - 1:
+                # the edit ends on this frozen picture: nothing cuts in after it
+                tail = [(x.f0 + e.frame, e) for x in cuts[i + 1:] for e in x.effects]
+                c.f1 = cuts[-1].f1
+                del cuts[i + 1:]
+                for at, e in tail:
+                    e.frame = at - c.f0
+                    c.effects.append(e)
             if m.action == "freeze":
                 if c.f0 == f:
                     c.freeze = True

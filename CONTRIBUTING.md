@@ -90,6 +90,7 @@ Slow work, like analysis, planning and rendering, runs off the main thread throu
 
 - `pytest -q` passes. CI runs the same tests on every push.
 - If you change how the free director reads prompts, add the prompt to `tests/phrasings.py`.
+- `tests/test_obedience.py` makes an edit for each instruction with every style and **measures** the result (shot lengths, effects, transitions, holds). If you add something people can ask for, add a check there too: reading a prompt right isn't enough if the edit doesn't follow it.
 - Keep the code style of the file you're in. Keep the text people see in plain English.
 - If a cached result changes shape, bump its version number so old caches are rebuilt. The version numbers are `ANALYSIS_VERSION`, `MUSIC_VERSION`, `RENDER_VERSION`, `TAG_VERSION` and `PROJECT_VERSION`.
 

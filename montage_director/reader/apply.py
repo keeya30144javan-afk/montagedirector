@@ -47,7 +47,7 @@ def _shift_pace(cut_every: dict, labels, pace: float) -> None:
 def _apply_amount(fx: dict, eff: str, amount: str) -> None:
     cur = fx.get(eff, 0.0)
     fx[eff] = float(min(1.0, max(0.0, {"none": 0.0, "less": cur * 0.4, "light": min(max(cur, 0.15), 0.25),
-                                       "more": max(cur + 0.4, 0.75), "add": max(cur + 0.3, 0.5)}[amount])))
+                                       "more": max(cur + 0.4, 0.75), "add": max(cur + 0.3, 0.75)}[amount])))  # asked by name: it shows
 
 
 EFFECT_LABEL = {"flash": "flashes", "zoom": "zoom punches", "shake": "shake", "rgb": "glitch / RGB split",
@@ -291,6 +291,7 @@ def _apply_hint(d: Direction, hint: str) -> None:
     elif hint == "hard_cuts":
         st.blur_into_sections = False
         st.white_into_drop = False
+        st.white_dips = 0.0
         d.transitions.clear()
     elif hint == "epic":
         st.freeze_before_drop = True
@@ -308,6 +309,8 @@ def _apply_hint(d: Direction, hint: str) -> None:
 def _apply_scoped(d: Direction, ins: Instruction, labels: list[str], notes: list[str], prefix: str) -> None:
     """A whole-edit or a song-part instruction: changes the style itself."""
     st = d.style
+    if prefix:
+        d.asked_labels = sorted(set(d.asked_labels) | set(labels))
     said = []
     if ins.cut_rate is not None:
         for lab in labels:
@@ -338,6 +341,8 @@ def _apply_scoped(d: Direction, ins: Instruction, labels: list[str], notes: list
             for lab in labels:
                 st.effects[lab] = _fx()
             if prefix == "":
+                d.banned_fx = sorted(set(d.banned_fx) | set(EFFECTS))
+                st.white_dips = 0.0
                 st.flash_top = 0.0
                 st.white_into_drop = st.blur_into_sections = st.freeze_before_drop = False
                 d.look = Look()
@@ -352,6 +357,15 @@ def _apply_scoped(d: Direction, ins: Instruction, labels: list[str], notes: list
     for eff, amt in ins.effects.items():
         for lab in labels:
             _apply_amount(st.effects[lab], eff, amt)
+        if amt in ("add", "more") and prefix:  # "shake on the drop": make sure it really shows there
+            for lab in labels:
+                d.asked_fx.setdefault(lab, [])
+                if eff not in d.asked_fx[lab]:
+                    d.asked_fx[lab].append(eff)
+        if amt == "none" and prefix == "" and eff not in d.banned_fx:
+            d.banned_fx.append(eff)  # "no slow motion": not even to stretch a short shot
+        if eff == "flash" and amt == "none":
+            st.white_dips = 0.0
         if eff == "flash" and prefix == "":
             st.flash_top = {"none": 0.0, "less": st.flash_top * 0.4, "light": min(st.flash_top, 0.03) or 0.03,
                             "more": min(0.3, st.flash_top * 2 + 0.04), "add": max(st.flash_top, 0.06)}[amt]
