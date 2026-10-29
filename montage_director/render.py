@@ -252,6 +252,10 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
         "dark": "eq=contrast=1.25:brightness=-0.06:saturation=0.8:gamma=0.9,"
                 "colorbalance=rs=0.12:rm=0.08:gs=-0.04:bs=-0.02:bh=-0.05,vignette=PI/4",
     }.get(look.grade)
+    if look.grade.startswith("splash_"):  # black and white with one colour kept ("keep the red")
+        colour = {"red": "0xC01818", "blue": "0x1850D0", "green": "0x20A030", "yellow": "0xE0C020",
+                  "purple": "0x7030B0", "orange": "0xE07010", "pink": "0xE050A0"}.get(look.grade[7:], "0xC01818")
+        grade = f"colorhold=color={colour}:similarity=0.2:blend=0.06,eq=contrast=1.12:saturation=1.4"
     if grade:
         chain.append(grade)
     if look.trails > 0:
@@ -272,6 +276,12 @@ def _segment_graph(cut: Cut, look: Look, fit: str, W: int, H: int, fps: int) -> 
                          f"enable='eq(n,{e.frame + k})'")
     for e in by_kind.get("fade_black", []):
         chain.append(f"fade=t=out:s={e.frame}:n={max(1, e.frames)}:color=black")
+    for e in by_kind.get("static", []):  # TV static: snow, a torn signal, colour bleeding off
+        on = f"enable='between(n,{e.frame},{e.frame + e.frames - 1})'"
+        chain.append(f"rgbashift=rh={int(14 * e.intensity)}:bh=-{int(14 * e.intensity)}:gv={int(6 * e.intensity)}:{on}")
+        chain.append(f"hue=s={1 - 0.8 * e.intensity:.2f}:{on}")
+        chain.append(f"noise=alls={int(60 + 40 * e.intensity)}:allf=t+u:{on}")
+        chain.append(f"eq=contrast={1 + 0.6 * e.intensity:.2f}:{on}")
     for e in by_kind.get("blackout", []):  # cuts through black, black flicker
         chain.append(f"drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill:enable='between(n,{e.frame},{e.frame + e.frames - 1})'")
     for e in by_kind.get("white_up", []):  # the picture floods to white (into a drop)

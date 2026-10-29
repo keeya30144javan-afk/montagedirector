@@ -11,7 +11,15 @@ from .spelling import did_you_mean
 from .vocabulary import CUES
 
 WHO_RX = re.compile(r"\b(?:characters?|people|person|everyone|everybody|crowd|group|team|crew|squad|him|her|"
-                    r"one \w+|a single \w+|only one|just one)\b")
+                    r"one (?!shot|scene|clip|still|cut|long|static)\w+|a single (?!shot|scene|clip)\w+|only one|just one)\b")
+
+
+def hold_without_place(text: str) -> bool:
+    """"hold one shot" with no where: nothing to hold."""
+    from .instruction import read_instruction
+    from .splitting import _split
+
+    return any(i.hold and i.scope == "all" and not i.play_out and not i.prefer for i in map(read_instruction, _split(normalise(text))))
 
 
 def typing_help(text: str, mode: str = "idea", has_tags: bool = False, use_ai: bool = False,
@@ -52,6 +60,8 @@ def typing_help(text: str, mode: str = "idea", has_tags: bool = False, use_ai: b
                     "needs Describe my shots once (Footage section, about a cent), or choose the shot yourself with "
                     "Pick shot…. Without it, \"space\" just means dark-looking shots.")
     has_time = bool(TIME_RE.search(low))
+    if hold_without_place(text):
+        tips.insert(0, "Say where to hold it: \"hold one shot in the intro\", \"from 0:10 to 0:20\" or \"at the end\".")
     if not has_time and any(re.search(p, low) for k, p in CUES if k in ("drop", "solo", "drums_faster", "hits",
                                                                        "vocals", "stop")):
         tips.append("If it lands in the wrong place, add a time: \"until 0:17 when the beat drops\", "

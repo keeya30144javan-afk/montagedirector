@@ -106,6 +106,10 @@ CHECKS = [  # (prompt, check(plan, plan without the prompt, song) -> ok)
     ("hard cuts", lambda p, b, s: trans(p) == 0),
     ("cut through black", lambda p, b, s: fx(p, "blackout") >= 0.5 * len(scene_lengths(p))),
     ("black and white", lambda p, b, s: p.look.grade == "mono"),
+    ("black and white but keep the red", lambda p, b, s: p.look.grade == "splash_red"),
+    ("tv static on the drop", lambda p, b, s: fx(p, "static", *span(s, "drop")) >= 2),
+    ("narrative amv", lambda p, b, s: sum(fx(p, k) for k in ("shake", "rgb", "invert", "blackout")) == 0
+     and fx(p, "flash") <= max(3, fx(b, "flash") // 3) and p.look.grade == "none"),
     ("letterbox", lambda p, b, s: p.look.letterbox),
     ("hold one shot from 0:40 to 0:50", lambda p, b, s: not cuts_inside(p, 40 + 1.5 * 60 / s.tempo, 50 - 1.5 * 60 / s.tempo)),
     ("quick cuts from 1:00 to 1:10", lambda p, b, s: avg_scene(p, 60, 70) < avg_scene(b, 60, 70) * 0.9

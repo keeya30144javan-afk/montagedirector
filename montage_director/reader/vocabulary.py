@@ -58,6 +58,8 @@ EFFECT_WORDS = [  # (pattern, effect)
      r"blink(?:s|ing)? to black", "flicker"),
     (r"invert(?:ed|s)?|negative(?: flash(?:es)?)?|strobe(?:s|ing)?", "invert"),
     (r"stutter(?:s|ing)?(?: cuts?)?|repeat(?:ed|ing)? frames|skipping tape|tape skips?", "stutter"),
+    (r"(?:tv |television |screen )?static(?! (?:shots?|camera|cam|scenes?|images?|frames?|pictures?))|broken signal|bad signal|"
+     r"signal (?:loss|glitch(?:es)?|drop(?:s|outs?)?)|channel (?:switch|flip)(?:es|ing)?|tv glitch(?:es)?|snow screen", "static"),
 ]
 FAST = (r"fast(?:er)?|quick(?:er|ly)?|rapid(?:ly)?|hype(?:d)?|aggressive|crazy|insane|intense|chaotic|wild|"
         r"go(?:es)? off|go hard|goes hard|speed (?:it )?up|speeds up|pick(?:s)? (?:it |back )?up|picks back up|energetic|"
@@ -76,7 +78,7 @@ SLOW = (r"slow(?:er)?(?! motion)|slow (?:it )?down|slows down|calm(?:er)?|chill(
 NORMAL = (r"back to (?:normal|the flow|the groove|regular|how it was|the melody|the (?:main )?(?:beat|vibe|rhythm|pace))|"
           r"normal speed|regular speed|medium speed|normal cuts|regular cuts|"
           r"normal pace|regular pace|the flow|groove|steady|medium pace|go back|goes back|melody")
-HOLD = (r"still shot|one shot|single shot|\bhold(?:s|ing)?\b|held shot|panning shot|pan shot|one long shot|"
+HOLD = (r"still shot|one shot|single shot|(?:one |a |single )?static (?:shot|camera)|\bhold(?:s|ing)?\b|held shot|panning shot|pan shot|one long shot|"
         r"stay on (?:one|a|the)|linger|let (?:it|the shot) play|don't cut|no cuts|long take|"
         r"\bplay(?:s|ing)? (?:it |this |that |the \w+ )?(?:out|through)\b|\blet (?:it|the \w+|this \w+) play\b|"
         r"\buncut\b|\bwithout (?:any )?cuts\b|\b(?:whole|full|entire|complete) (?:fight|battle|scene|sequence)\b|"
@@ -217,6 +219,9 @@ GLOBAL_HINTS = [
     (r"\b(?:dark|menacing|sinister|evil|horror|grim|villain(?:ous)?)\b[\w\s,]{0,20}\b(?:music video|mv|rap video|"
      r"edit|amv|vibe)\b|\bhellsing\b|\bberserk\b", "dark_mv",
      "dark music video: dark red grade, cuts through black, black flicker (heaviest in the intro), letterbox"),
+    (r"\bnarrative\b|\bstory(?:telling)? (?:edit|amv|mode|driven)\b|\btell (?:a|the) story\b|\blet the (?:animation|anime|"
+     r"scenes?|footage) (?:speak|breathe|carry(?: it)?|do the talking)\b", "narrative",
+     "narrative AMV: the big moments play out, very few effects, natural colour"),
     (r"\bphonk\b", "phonk", "phonk edit: heavy shake and zooms on the bass, cuts on the kick in the drop"),
     (r"\bamvs?\b|\bgmvs?\b|\b20(?:0\d|1[0-3])\b|\bold (?:school )?(?:youtube|amv|edit)s?\b|\bnostalgi\w+\b|\bclassic edit\b",
      "amv", "2000s AMV feel: glow, ghost trails, white flashes into the drop"),
@@ -228,7 +233,14 @@ GLOBAL_HINTS = [
     (r"\bfreeze(?: frame)? (?:right )?(?:before|on|at|into) the drop\b", "freeze_drop", "freeze frame before the drop"),
     (r"\bwhite (?:flash|fade) (?:in)?to the drop\b|\bfade (?:in )?from white\b", "white_drop", "white fade into the drop"),
 ]
+SPLASH_COLOURS = "red|blue|green|yellow|purple|orange|pink"
 LOOKS = [
+    # colour splash: everything grey except one colour ("black and white but keep the red")
+    (rf"\b(?:black (?:and|&|n) white|b&w|gr[ae]y(?:scale)?|monochrome|no colou?r)\b[\w\s,]{{0,20}}?\b(?:but|except|with|apart from|"
+     rf"other than|keep(?:ing)?|only) (?:for )?(?:the )?(?:{SPLASH_COLOURS})\b|\b(?:only|just) (?:keep )?(?:the )?"
+     rf"(?:{SPLASH_COLOURS})(?: colou?r)?s? (?:in colou?r|stay|stays|showing)\b|\b(?:{SPLASH_COLOURS}) only\b|"
+     rf"\bkeep (?:only )?(?:the )?(?:{SPLASH_COLOURS})s?\b|\bcolou?r ?splash\b|\bselective colou?r\b|\bsplash of (?:{SPLASH_COLOURS})\b",
+     "splash", "black and white, only one colour kept"),
     (r"\bvhs\b|\bretro\b|\bgrain(?:y)?\b|\bcamcorder\b|\bold school\b", "vhs", "VHS look"),
     (r"\bblack (?:and|&|n) white\b|\bb&w\b|\bmonochrome\b|\bgr[ae]yscale\b|\bno colou?r\b", "mono", "black and white"),
     (r"\by2k\b|\b2000s\b|\b2010s\b|\bold youtube\b|\bnostalgi\w*\b", "y2k", "Y2K colour"),

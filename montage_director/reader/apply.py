@@ -23,7 +23,7 @@ from ..plan import Look
 from .instruction import Instruction, read_instruction
 from .normalise import TIME_RE, T, _secs, normalise
 from .splitting import _split
-from .vocabulary import CUE_NAMES, FILLER, GLOBAL_HINTS, LOOKS
+from .vocabulary import CUE_NAMES, FILLER, GLOBAL_HINTS, LOOKS, SPLASH_COLOURS
 
 
 def _step(value: float, steps: int) -> float:
@@ -52,7 +52,7 @@ def _apply_amount(fx: dict, eff: str, amount: str) -> None:
 
 EFFECT_LABEL = {"flash": "flashes", "zoom": "zoom punches", "shake": "shake", "rgb": "glitch / RGB split",
                 "slowmo": "slow motion", "reverse": "reversed clips", "invert": "negative strobes",
-                "stutter": "stutter cuts", "flicker": "black flickers"}
+                "stutter": "stutter cuts", "flicker": "black flickers", "static": "TV static glitches"}
 AMOUNT_WORD = {"none": "no", "less": "fewer", "light": "a few", "more": "more", "add": ""}
 DRUM_WORD = {"snare": "snare", "kick": "kick", "hits": "drum hit", "big": "big hit", "bar": "bar", "beat": "beat"}
 
@@ -96,12 +96,21 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
     every = list(SECTION_LABELS)
 
     # Whole-edit flavour words first (genre / era / look / shape).
+    applied: set[str] = set()
     for pattern, hint, note in GLOBAL_HINTS:
+        if hint == "amv" and "narrative" in applied:
+            continue  # "narrative AMV" is its own kind of AMV: no 2000s glow and flashes
         if re.search(pattern, text):
             _apply_hint(d, hint)
+            applied.add(hint)
             notes.append(note)
     for pattern, grade, note in LOOKS:
-        if re.search(pattern, text):
+        m = re.search(pattern, text)
+        if m:
+            if grade == "splash":  # which colour stays: the one they named (red by default, like the Akatsuki clouds)
+                colour = re.search(rf"\b({SPLASH_COLOURS})\b", m.group(0))
+                grade = "splash_" + (colour.group(1) if colour else "red")
+                note = f"black and white, only the {grade[7:]} kept"
             d.look.grade = grade
             notes.append(note)
             break
@@ -174,6 +183,8 @@ def read_prompt(prompt: str, base: Direction) -> Direction:
     for ins in instructions:
         if not ins.understood and _meaningful(ins.text):
             d.unclear.append(ins.text.strip())
+        elif ins.hold and ins.scope == "all" and not ins.play_out and not ins.prefer:
+            d.unclear.append(ins.text.strip() + " (where?)")  # a hold needs a place: the whole edit can't be one shot
     seen = set()
     notes = [n for n in notes if n and not (n in seen or seen.add(n))]
     d.notes = notes or ["(using the style as it is)"]
@@ -266,6 +277,15 @@ def _apply_hint(d: Direction, hint: str) -> None:
         for lab in every:
             st.effects[lab]["flicker"] = 0.8 if lab == "intro" else 0.35
             st.effects[lab]["flash"] *= 0.3
+    elif hint == "narrative":  # the animation tells the story: let it play, keep the effects out of the way
+        for lab in every:
+            st.effects[lab] = {k: v * (0.2 if k in ("flash", "zoom") else 0.0 if k != "slowmo" else v)
+                               for k, v in st.effects[lab].items()}
+        st.flash_top *= 0.25
+        st.white_dips, st.natural_holds, st.cut_on_fills = 0.0, True, False
+        st.blur_into_sections = False
+        d.drum_fx = [e for e in d.drum_fx if not e.get("style")]
+        d.look.grade, d.look.glow, d.look.trails = "none", 0.0, 0.0
     elif hint == "trailer":
         d.look.letterbox = True
         st.freeze_before_drop = True

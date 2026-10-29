@@ -27,6 +27,9 @@ The app checks for updates when it starts and offers to download new versions. Y
 
    **Mix and match moves with any style.** Every move above can be asked for by name, in any style and any part of the song: "quick blends", "dissolves", "dips to black", "pixel transitions", "stutters on the drop", "white flashes", "zoom punches", "shake on the big hits". Some looks that aren't a style of their own:
    - **Dark music video** (think Hellsing over a rap track): say "dark music video" or "horror vibe". You get a dark red grade, hard cuts that snap through black, a black flicker that's heaviest in the intro, and letterbox bars. Or pick the pieces: "cut through black", "heavy flicker in the intro", "dark red grade".
+   - **Colour splash** (like an Akatsuki edit): "black and white but keep the red", or blue, green, yellow, purple, orange or pink. Everything goes grey except that colour.
+   - **TV static / broken signal:** "tv static on the drop", "broken signal glitches". Snow and a torn signal as cuts land, and the signal dies for a beat before each drop.
+   - **Narrative AMV** (story first): "narrative AMV" or "let the animation speak". Big moments play out through the anime's own cuts, with very few effects and natural colour.
 4. **Your idea:** describe the edit, for example *"Slow emotional intro on the quiet scenes, then go crazy on the drop with the fight scenes and lots of flashes. Freeze frame at 1:05. Vertical for TikTok."*
 5. **Director:**
    - **Free (on this PC):** no account needed. Reads your idea the way an editor would: pace ("a little faster", "not too fast", "back to the flow", "every 2 beats"), effects with amounts ("a few flashes", "less shake", "no glitch"), the drums ("cut on the kick", "flash on every snare", "slow motion on the big hits"), what to show ("fight scenes", "explosions", "close-ups", "dark scenes", "blue shots"), and where ("the chorus", "the second drop", "from 0:30 to 0:45", "the last 20 seconds", "halfway through", "when the solo starts", "before each drop"). Press **Ideas** for examples and **What can I say?** for the full list. Anything it doesn't understand is shown as *Didn't catch* so you can rephrase it.
@@ -91,7 +94,7 @@ Tests: `pip install pytest` then `pytest`. Want to help? [CONTRIBUTING.md](CONTR
 ## Releasing a new version
 
 1. Update `__version__` in `montage_director/__init__.py`.
-2. Push a tag: `git tag v0.4.6 && git push origin v0.4.6`.
+2. Push a tag: `git tag v0.4.7 && git push origin v0.4.7`.
 3. GitHub Actions builds the Windows installer and the Mac disk image and publishes them on the Releases page. Installed copies see the update the next time they start.
 
 To build test installers without publishing, open **Actions → Build installers → Run workflow**.

@@ -64,6 +64,11 @@ def _split(text: str) -> list[str]:
                 and not FAST_RX.search(p) and not SLOW_RX.search(p):
             merged[-1] = merged[-1] + " " + p
             continue
+        # "at 2:10 let the fight play, no cuts": a bare "no cuts" belongs to the instruction before it
+        if merged and re.fullmatch(r"(?:and |just |with )?(?:no cuts(?: at all)?|don'?t cut(?: it| away)?|uncut|hold it|"
+                                   r"let it (?:play|run)(?: out)?|no cutting|one take)", p):
+            merged[-1] = merged[-1] + " " + p
+            continue
         # ", until about 0:17 when the beat drops" ends the instruction before it
         if merged and re.match(r"(?:and |then )?(?:until|till|til|up to|up until|all the way to|through|thru|right up to)\b", p) \
                 and _only_scope(p):

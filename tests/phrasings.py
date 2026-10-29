@@ -210,6 +210,12 @@ CASES += [
     ("gritty horror vibe", ["dark music video"]),
     ("stutters on the drop", ["drop: stutter cuts"]),
     ("quick blends between the shots", ["quick blends"]),
+    ("black and white but keep the red", ["only the red kept"]),
+    ("make it grey except the blue", ["only the blue kept"]),
+    ("tv static on the drop", ["drop: TV static glitches"]),
+    ("hold one static shot in the intro", ["intro: hold one shot"]),
+    ("gundam narrative amv", ["narrative AMV"]),
+    ("let the animation speak, cut on the beat", ["narrative AMV", "a cut every beat"]),
 ]
 
 # Longer, rambling prompts with several instructions, the way people really write them.

@@ -1249,6 +1249,7 @@ class _Planner:
         self.apply_drum_fx(cuts)
         self.apply_asked_effects(cuts)
         self.apply_flicker(cuts)
+        self.apply_static(cuts)
 
         # Section entrances.
         for sec in self.song.sections:
@@ -1297,6 +1298,18 @@ class _Planner:
                 amount = self.effect_at(self.song_t(f), "flicker")
                 if amount > 0 and self.rng.random() < amount * 0.9:
                     self.add(cuts, f, "blackout", self.rng.choice((1, 2, 2, 3)))
+
+    def apply_static(self, cuts: list[Cut]) -> None:
+        """TV static ("static on the drop", "broken signal glitches"): the picture breaks into snow and a torn
+        signal for a few frames as a cut lands, and for a whole beat as the signal dies into a drop."""
+        beat_f = max(2, int(round(self.beat * self.fps)))
+        for c in cuts[1:]:
+            amount = self.effect_at(self.song_t(c.f0), "static")
+            if amount > 0 and self.rng.random() < 0.15 + 0.35 * amount:
+                self.add(cuts, c.f0, "static", self.rng.choice((2, 3, 4)), min(1.0, 0.5 + amount / 2))
+        for t in self.drops:
+            if self.S < t - self.beat and self.effect_at(t, "static") > 0:
+                self.add(cuts, self.frame_of(t - self.beat), "static", beat_f, 1.0)
 
     def apply_asked_effects(self, cuts: list[Cut]) -> None:
         """Effects asked for in a part of the song ("more flashes", "zoom", "shake" there) really show up:
